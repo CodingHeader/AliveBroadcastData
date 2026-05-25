@@ -1,0 +1,310 @@
+{% extends "base.html" %}
+{% block content %}
+<div x-data="reportsApp()" x-init="loadAll()" class="space-y-6">
+    <h1 class="page-title">报告中心</h1>
+
+    <!-- Tab导航 -->
+    <div class="flex space-x-1 bg-gray-100 p-1 rounded-lg">
+        <button @click="tab='all'; loadAll()" :class="tab==='all'?'bg-white shadow text-blue-600':'text-gray-500 hover:text-gray-700'" class="px-4 py-1.5 rounded-md text-sm font-medium transition-all">全部报告</button>
+        <button @click="tab='session'; loadSessions()" :class="tab==='session'?'bg-white shadow text-blue-600':'text-gray-500 hover:text-gray-700'" class="px-4 py-1.5 rounded-md text-sm font-medium transition-all">场次分析</button>
+        <button @click="tab='daily'; loadReports('daily'); loadAvailableDates()" :class="tab==='daily'?'bg-white shadow text-blue-600':'text-gray-500 hover:text-gray-700'" class="px-4 py-1.5 rounded-md text-sm font-medium transition-all">日报</button>
+        <button @click="tab='weekly'; loadReports('weekly')" :class="tab==='weekly'?'bg-white shadow text-blue-600':'text-gray-500 hover:text-gray-700'" class="px-4 py-1.5 rounded-md text-sm font-medium transition-all">周报</button>
+        <button @click="tab='monthly'; loadReports('monthly')" :class="tab==='monthly'?'bg-white shadow text-blue-600':'text-gray-500 hover:text-gray-700'" class="px-4 py-1.5 rounded-md text-sm font-medium transition-all">月报</button>
+    </div>
+
+    <!-- 全部报告Tab -->
+    <div x-show="tab==='all'" class="bg-white rounded-lg shadow-sm overflow-x-auto">
+        <table class="min-w-full">
+            <thead class="bg-gray-50"><tr><th class="px-4 py-2">类型</th><th class="px-4 py-2">周期/场次</th><th class="px-4 py-2">生成时间</th><th class="px-4 py-2">操作</th></tr></thead>
+            <tbody>
+                <template x-for="r in allReports">
+                    <tr class="border-t">
+                        <td class="px-4 py-2" x-text="typeLabel(r.report_type)"></td>
+                        <td class="px-4 py-2" x-text="r.period"></td>
+                        <td class="px-4 py-2" x-text="r.generated_at"></td>
+                        <td class="px-4 py-2 space-x-2">
+                            <a :href="`/api/reports/${r.id}/download`" class="text-blue-500 hover:underline text-sm">下载</a>
+                            <button @click="regenerate(r.id)" class="text-green-500 hover:underline text-sm">重新生成</button>
+                            <button @click="deleteReport(r.id)" class="text-red-500 hover:underline text-sm">删除</button>
+                        </td>
+                    </tr>
+                </template>
+            </tbody>
+        </table>
+        <p x-show="allReports.length===0" class="text-gray-500 p-4 text-center">暂无报告</p>
+    </div>
+
+    <!-- 场次分析Tab -->
+    <div x-show="tab==='session'" class="bg-white rounded-lg shadow-sm overflow-x-auto">
+        <table class="min-w-full">
+            <thead class="bg-gray-50"><tr><th class="px-4 py-2">场次时间</th><th class="px-4 py-2">时长</th><th class="px-4 py-2">线索</th><th class="px-4 py-2">消耗</th><th class="px-4 py-2">报告状态</th><th class="px-4 py-2">操作</th></tr></thead>
+            <tbody>
+                <template x-for="s in sessions">
+                    <tr class="border-t">
+                        <td class="px-4 py-2" x-text="formatTime(s.start_time, s.end_time)"></td>
+                        <td class="px-4 py-2" x-text="s.duration_text"></td>
+                        <td class="px-4 py-2" x-text="s.leads"></td>
+                        <td class="px-4 py-2" x-text="'¥' + s.spend"></td>
+                        <td class="px-4 py-2">
+                            <span :class="s.has_report?'text-green-600':'text-gray-400'" x-text="s.has_report?'已生成':'未生成'"></span>
+                        </td>
+                        <td class="px-4 py-2 space-x-2">
+                            <template x-if="s.has_report">
+                                <span>
+                                    <a :href="`/api/reports/${s.report_id}/download`" class="text-blue-500 hover:underline text-sm">下载</a>
+                                    <button @click="regenerate(s.report_id)" class="text-green-500 hover:underline text-sm">重新生成</button>
+                                    <button @click="deleteReport(s.report_id)" class="text-red-500 hover:underline text-sm">删除</button>
+                                </span>
+                            </template>
+                            <template x-if="!s.has_report">
+                                <button @click="generateSession(s.id)" class="bg-blue-500 text-white px-2 py-1 rounded text-sm hover:bg-blue-600">生成AI分析</button>
+                            </template>
+                        </td>
+                    </tr>
+                </template>
+            </tbody>
+        </table>
+        <p x-show="sessions.length===0" class="text-gray-500 p-4 text-center">暂无场次数据</p>
+        <!-- 分页栏 -->
+        <div x-show="sessionTotal > sessionSize" class="flex items-center justify-between px-4 py-3 bg-gray-50 border-t">
+            <span class="text-sm text-gray-600" x-text="`共 ${sessionTotal} 条，第 ${sessionPage} / ${Math.ceil(sessionTotal/sessionSize)} 页`"></span>
+            <div class="flex space-x-2">
+                <button @click="prevSessionPage()" :disabled="sessionPage===1" class="px-3 py-1 text-sm border rounded hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed">上一页</button>
+                <button @click="nextSessionPage()" :disabled="sessionPage===Math.ceil(sessionTotal/sessionSize)" class="px-3 py-1 text-sm border rounded hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed">下一页</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 日报Tab -->
+    <div x-show="tab==='daily'" class="space-y-4">
+        <div class="bg-gray-50 p-4 rounded flex items-center space-x-4">
+            <label class="text-sm text-gray-600">生成指定日期日报:</label>
+            <input type="date" x-model="dailyDate" class="border rounded px-2 py-1">
+            <button @click="generateDaily()" class="bg-blue-500 text-white px-3 py-1 rounded hover:bg-blue-600">生成</button>
+            <button @click="loadAvailableDates()" class="text-blue-500 hover:underline text-sm ml-4">刷新可用日期</button>
+        </div>
+        <div x-show="availableDates.length>0" class="bg-white rounded-lg shadow-sm overflow-x-auto">
+            <h3 class="px-4 py-2 bg-gray-50 text-sm font-semibold text-gray-600">可生成日报的日期列表</h3>
+            <table class="min-w-full">
+                <thead class="bg-gray-50"><tr><th class="px-4 py-2">日期</th><th class="px-4 py-2">场次数</th><th class="px-4 py-2">报告状态</th><th class="px-4 py-2">操作</th></tr></thead>
+                <tbody>
+                    <template x-for="d in availableDates">
+                        <tr class="border-t">
+                            <td class="px-4 py-2" x-text="d.date"></td>
+                            <td class="px-4 py-2" x-text="d.session_count"></td>
+                            <td class="px-4 py-2">
+                                <span :class="d.has_report?'text-green-600':'text-gray-400'" x-text="d.has_report?'已生成':'未生成'"></span>
+                            </td>
+                            <td class="px-4 py-2 space-x-2">
+                                <template x-if="d.has_report">
+                                    <span>
+                                        <a :href="`/api/reports/${d.report_id}/download`" class="text-blue-500 hover:underline text-sm">下载</a>
+                                        <button @click="regenerate(d.report_id)" class="text-green-500 hover:underline text-sm">重新生成</button>
+                                    </span>
+                                </template>
+                                <template x-if="!d.has_report">
+                                    <button @click="generateDailyFromDate(d.date)" class="bg-blue-500 text-white px-2 py-1 rounded text-sm hover:bg-blue-600">生成日报</button>
+                                </template>
+                            </td>
+                        </tr>
+                    </template>
+                </tbody>
+            </table>
+        </div>
+        <div class="bg-white rounded-lg shadow-sm overflow-x-auto">
+            <table class="min-w-full">
+                <thead class="bg-gray-50"><tr><th class="px-4 py-2">日期</th><th class="px-4 py-2">生成时间</th><th class="px-4 py-2">操作</th></tr></thead>
+                <tbody>
+                    <template x-for="r in dailyReports">
+                        <tr class="border-t">
+                            <td class="px-4 py-2" x-text="r.period"></td>
+                            <td class="px-4 py-2" x-text="r.generated_at"></td>
+                            <td class="px-4 py-2 space-x-2">
+                                <a :href="`/api/reports/${r.id}/download`" class="text-blue-500 hover:underline text-sm">下载</a>
+                                <button @click="regenerate(r.id)" class="text-green-500 hover:underline text-sm">重新生成</button>
+                                <button @click="deleteReport(r.id)" class="text-red-500 hover:underline text-sm">删除</button>
+                            </td>
+                        </tr>
+                    </template>
+                </tbody>
+            </table>
+            <p x-show="dailyReports.length===0" class="text-gray-500 p-4 text-center">暂无日报</p>
+        </div>
+    </div>
+
+    <!-- 周报Tab -->
+    <div x-show="tab==='weekly'" class="space-y-4">
+        <div class="bg-gray-50 p-4 rounded flex items-center space-x-4">
+            <label class="text-sm text-gray-600">生成指定周期周报 (格式: 2026-W20):</label>
+            <input type="text" x-model="weeklyPeriod" placeholder="2026-W20" class="border rounded px-2 py-1">
+            <button @click="generateWeekly()" class="bg-blue-500 text-white px-3 py-1 rounded hover:bg-blue-600">生成</button>
+        </div>
+        <div class="bg-white rounded-lg shadow-sm overflow-x-auto">
+            <table class="min-w-full">
+                <thead class="bg-gray-50"><tr><th class="px-4 py-2">周期</th><th class="px-4 py-2">生成时间</th><th class="px-4 py-2">操作</th></tr></thead>
+                <tbody>
+                    <template x-for="r in weeklyReports">
+                        <tr class="border-t">
+                            <td class="px-4 py-2" x-text="r.period"></td>
+                            <td class="px-4 py-2" x-text="r.generated_at"></td>
+                            <td class="px-4 py-2 space-x-2">
+                                <a :href="`/api/reports/${r.id}/download`" class="text-blue-500 hover:underline text-sm">下载</a>
+                                <button @click="regenerate(r.id)" class="text-green-500 hover:underline text-sm">重新生成</button>
+                                <button @click="deleteReport(r.id)" class="text-red-500 hover:underline text-sm">删除</button>
+                            </td>
+                        </tr>
+                    </template>
+                </tbody>
+            </table>
+            <p x-show="weeklyReports.length===0" class="text-gray-500 p-4 text-center">暂无周报</p>
+        </div>
+    </div>
+
+    <!-- 月报Tab -->
+    <div x-show="tab==='monthly'" class="space-y-4">
+        <div class="bg-gray-50 p-4 rounded flex items-center space-x-4">
+            <label class="text-sm text-gray-600">生成指定月份月报 (格式: 2026-05):</label>
+            <input type="text" x-model="monthlyPeriod" placeholder="2026-05" class="border rounded px-2 py-1">
+            <button @click="generateMonthly()" class="bg-blue-500 text-white px-3 py-1 rounded hover:bg-blue-600">生成</button>
+        </div>
+        <div class="bg-white rounded-lg shadow-sm overflow-x-auto">
+            <table class="min-w-full">
+                <thead class="bg-gray-50"><tr><th class="px-4 py-2">月份</th><th class="px-4 py-2">生成时间</th><th class="px-4 py-2">操作</th></tr></thead>
+                <tbody>
+                    <template x-for="r in monthlyReports">
+                        <tr class="border-t">
+                            <td class="px-4 py-2" x-text="r.period"></td>
+                            <td class="px-4 py-2" x-text="r.generated_at"></td>
+                            <td class="px-4 py-2 space-x-2">
+                                <a :href="`/api/reports/${r.id}/download`" class="text-blue-500 hover:underline text-sm">下载</a>
+                                <button @click="regenerate(r.id)" class="text-green-500 hover:underline text-sm">重新生成</button>
+                                <button @click="deleteReport(r.id)" class="text-red-500 hover:underline text-sm">删除</button>
+                            </td>
+                        </tr>
+                    </template>
+                </tbody>
+            </table>
+            <p x-show="monthlyReports.length===0" class="text-gray-500 p-4 text-center">暂无月报</p>
+        </div>
+    </div>
+
+    <!-- 操作反馈 -->
+    <div x-show="message" x-text="message" :class="messageType==='error'?'bg-red-50 text-red-700':'bg-green-50 text-green-700'" class="p-3 rounded"></div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+function reportsApp() {
+    return {
+        tab: 'all',
+        allReports: [],
+        sessions: [],
+        sessionPage: 1,
+        sessionSize: 20,
+        sessionTotal: 0,
+        dailyReports: [],
+        weeklyReports: [],
+        monthlyReports: [],
+        availableDates: [],
+        dailyDate: '',
+        weeklyPeriod: '',
+        monthlyPeriod: '',
+        message: '',
+        messageType: 'success',
+        typeLabel(type) {
+            const map = {session:'场次分析',daily:'日报',weekly:'周报',monthly:'月报'};
+            return map[type] || type;
+        },
+        formatTime(start, end) {
+            return (start||'').slice(0,16).replace('T',' ') + ' ~ ' + (end||'').slice(11,16);
+        },
+        showMessage(msg, type='success') {
+            this.message = msg; this.messageType = type;
+            setTimeout(() => this.message = '', 3000);
+        },
+        async loadAvailableDates() {
+            const resp = await fetch('/api/reports/dates-status');
+            const json = await resp.json();
+            this.availableDates = json.data?.items || [];
+        },
+        async generateDailyFromDate(date) {
+            const resp = await fetch(`/api/reports/daily/${date}/generate`, {method:'POST'});
+            const json = await resp.json();
+            if (json.code === 0) { this.showMessage('日报生成成功'); this.loadAvailableDates(); this.loadReports('daily'); }
+            else { this.showMessage(json.message || '生成失败', 'error'); }
+        },
+        async loadAll() {
+            const resp = await fetch('/api/reports');
+            const json = await resp.json();
+            this.allReports = json.data?.items || [];
+        },
+        async loadSessions() {
+            const resp = await fetch(`/api/sessions/for-reports?page=${this.sessionPage}&size=${this.sessionSize}`);
+            const json = await resp.json();
+            this.sessions = json.data?.items || [];
+            this.sessionTotal = json.data?.total || 0;
+        },
+        prevSessionPage() {
+            if (this.sessionPage > 1) { this.sessionPage--; this.loadSessions(); }
+        },
+        nextSessionPage() {
+            const maxPage = Math.ceil(this.sessionTotal / this.sessionSize);
+            if (this.sessionPage < maxPage) { this.sessionPage++; this.loadSessions(); }
+        },
+        async loadReports(type) {
+            const resp = await fetch(`/api/reports?type=${type}`);
+            const json = await resp.json();
+            if (type === 'daily') this.dailyReports = json.data?.items || [];
+            else if (type === 'weekly') this.weeklyReports = json.data?.items || [];
+            else if (type === 'monthly') this.monthlyReports = json.data?.items || [];
+        },
+        async generateSession(sessionId) {
+            const resp = await fetch(`/api/reports/session/${sessionId}/generate`, {method:'POST'});
+            const json = await resp.json();
+            if (json.code === 0) { this.showMessage('AI分析生成中，请稍后刷新'); this.loadSessions(); }
+            else { this.showMessage(json.message || '生成失败', 'error'); }
+        },
+        async generateDaily() {
+            if (!this.dailyDate) { this.showMessage('请选择日期', 'error'); return; }
+            const resp = await fetch(`/api/reports/daily/${this.dailyDate}/generate`, {method:'POST'});
+            const json = await resp.json();
+            if (json.code === 0) { this.showMessage('日报生成成功'); this.loadReports('daily'); }
+            else { this.showMessage(json.message || '生成失败', 'error'); }
+        },
+        async generateWeekly() {
+            if (!this.weeklyPeriod) { this.showMessage('请输入周期', 'error'); return; }
+            const resp = await fetch(`/api/reports/weekly/${this.weeklyPeriod}/generate`, {method:'POST'});
+            const json = await resp.json();
+            if (json.code === 0) { this.showMessage('周报生成成功'); this.loadReports('weekly'); }
+            else { this.showMessage(json.message || '生成失败', 'error'); }
+        },
+        async generateMonthly() {
+            if (!this.monthlyPeriod) { this.showMessage('请输入月份', 'error'); return; }
+            const resp = await fetch(`/api/reports/monthly/${this.monthlyPeriod}/generate`, {method:'POST'});
+            const json = await resp.json();
+            if (json.code === 0) { this.showMessage('月报生成成功'); this.loadReports('monthly'); }
+            else { this.showMessage(json.message || '生成失败', 'error'); }
+        },
+        async regenerate(reportId) {
+            if (!confirm('确定要重新生成此报告吗？')) return;
+            const resp = await fetch(`/api/reports/${reportId}/regenerate`, {method:'POST'});
+            const json = await resp.json();
+            if (json.code === 0) { this.showMessage('重新生成成功'); this.refreshCurrent(); }
+            else { this.showMessage(json.message || '重新生成失败', 'error'); }
+        },
+        async deleteReport(reportId) {
+            if (!confirm('确定要删除此报告吗？')) return;
+            const resp = await fetch(`/api/reports/${reportId}`, {method:'DELETE'});
+            const json = await resp.json();
+            if (json.code === 0) { this.showMessage('删除成功'); this.refreshCurrent(); }
+            else { this.showMessage(json.message || '删除失败', 'error'); }
+        },
+        refreshCurrent() {
+            if (this.tab === 'all') this.loadAll();
+            else if (this.tab === 'session') this.loadSessions();
+            else this.loadReports(this.tab);
+        }
+    };
+}
+</script>
+{% endblock %}

@@ -1,0 +1,178 @@
+{% extends "base.html" %}
+{% block content %}
+<div x-data="sessionDetailApp()" x-init="loadData()" class="space-y-6">
+    <div class="bg-white rounded-lg shadow-sm p-4">
+        <h1 class="page-title">场次详情</h1>
+        <p x-show="session" class="text-gray-600" x-text="session?.start_time + ' ~ ' + session?.end_time + ' (' + session?.duration_minutes + '分钟)'"></p>
+        <div class="flex space-x-4 mt-2 text-sm text-gray-500">
+            <span x-show="anchors?.length">主播: <span x-text="anchors?.map(a=>a.name).join(', ')"></span></span>
+            <span x-show="!anchors?.length" class="text-orange-500 font-medium">⚠ 未关联主播</span>
+        </div>
+        <div x-show="isAdmin" class="mt-3 pt-3 border-t border-gray-100">
+            <div class="flex items-center gap-2">
+                <span class="text-sm text-gray-600 font-medium">管理主播:</span>
+                <select x-model="selectedAnchorIds" multiple class="form-input text-sm py-1 h-auto max-w-xs">
+                    <template x-for="a in allAnchors"><option :value="a.id" :selected="selectedAnchorIds.includes(a.id)" x-text="a.name"></option></template>
+                </select>
+                <button @click="saveAnchors()" class="btn-primary text-xs py-1 px-2">保存关联</button>
+            </div>
+        </div>
+    </div>
+    <div class="flex space-x-2 border-b overflow-x-auto">
+        <template x-for="tab in tabs">
+            <button @click="activeTab=tab.key" :class="activeTab===tab.key?'border-blue-500 text-blue-600':'border-transparent'" class="px-4 py-2 border-b-2 whitespace-nowrap" x-text="tab.label"></button>
+        </template>
+    </div>
+
+    <div x-show="activeTab==='traffic'" class="bg-white rounded-lg shadow-sm p-4">
+        <h3 class="font-bold mb-4">流量指标</h3>
+        <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+            <template x-for="item in metricGroup('traffic')">
+                <div class="text-center p-3 bg-gray-50 rounded"><div class="text-sm text-gray-500" x-text="item.label"></div><div class="text-xl font-bold" x-text="item.value"></div></div>
+            </template>
+        </div>
+    </div>
+    <div x-show="activeTab==='interaction'" class="bg-white rounded-lg shadow-sm p-4">
+        <h3 class="font-bold mb-4">互动指标</h3>
+        <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+            <template x-for="item in metricGroup('interaction')">
+                <div class="text-center p-3 bg-gray-50 rounded"><div class="text-sm text-gray-500" x-text="item.label"></div><div class="text-xl font-bold" x-text="item.value"></div></div>
+            </template>
+        </div>
+    </div>
+    <div x-show="activeTab==='conversion'" class="bg-white rounded-lg shadow-sm p-4">
+        <h3 class="font-bold mb-4">转化指标</h3>
+        <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+            <template x-for="item in metricGroup('conversion')">
+                <div class="text-center p-3 bg-gray-50 rounded"><div class="text-sm text-gray-500" x-text="item.label"></div><div class="text-xl font-bold" x-text="item.value"></div></div>
+            </template>
+        </div>
+    </div>
+    <div x-show="activeTab==='leads'" class="bg-white rounded-lg shadow-sm p-4 overflow-x-auto">
+        <h3 class="font-bold mb-4">线索明细 (共 <span x-text="leads.length"></span> 条)</h3>
+        <table class="min-w-full"><thead><tr class="bg-gray-50"><th class="px-4 py-2">时间</th><th>昵称</th><th>城市</th><th>路径</th><th>标签</th><th>账户</th></tr></thead>
+        <tbody><template x-for="l in leads"><tr class="border-t"><td class="px-4 py-2" x-text="l.lead_time"></td><td x-text="l.nickname"></td><td x-text="l.city||'-'"></td><td x-text="l.path||'-'"></td><td x-text="l.tags||'-'"></td><td x-text="l.ad_account||'-'"></td></tr></template></tbody></table>
+    </div>
+    <div x-show="activeTab==='comments'" class="bg-white rounded-lg shadow-sm p-4 overflow-x-auto">
+        <h3 class="font-bold mb-4">评论明细 (共 <span x-text="comments.length"></span> 条)</h3>
+        <table class="min-w-full"><thead><tr class="bg-gray-50"><th class="px-4 py-2">昵称</th><th>内容</th><th>时间</th><th>状态</th></tr></thead>
+        <tbody><template x-for="c in comments"><tr class="border-t"><td class="px-4 py-2" x-text="c.nickname"></td><td x-text="c.content||'-'"></td><td x-text="formatCommentTime(c.comment_time)"></td><td><span :class="c.has_lead?'bg-green-100 text-green-800':'bg-gray-100'" class="px-2 py-1 rounded text-xs" x-text="c.has_lead?'已留资':'未留资'"></span></td></tr></template></tbody></table>
+    </div>
+    <div x-show="activeTab==='high_intent'" class="bg-white rounded-lg shadow-sm p-4">
+        <h3 class="font-bold mb-4">高意向用户 (共 <span x-text="highIntentUsers.length"></span> 个)</h3>
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            <template x-for="h in highIntentUsers">
+                <div class="border rounded p-4 flex items-center space-x-3">
+                    <img :src="h.avatar_url||'/static/img/default-avatar.png'" class="w-12 h-12 rounded-full bg-gray-200">
+                    <div><div class="font-bold" x-text="h.nickname"></div><div class="text-sm text-gray-500">评论 <span x-text="h.comment_count"></span> 次 | 停留 <span x-text="h.stay_duration||'-'"></span></div><span :class="statusColor(h.status)" class="px-2 py-1 rounded text-xs" x-text="h.status"></span></div>
+                </div>
+            </template>
+        </div>
+    </div>
+    <div x-show="activeTab==='funnel'" class="bg-white rounded-lg shadow-sm p-4">
+        <div x-show="!funnel.exposure && !funnel.view && !funnel.interaction && !funnel.leads" class="text-center text-gray-500 py-10">暂无漏斗数据</div>
+        <div x-show="funnel.exposure || funnel.view || funnel.interaction || funnel.leads" id="funnelChart" style="height:400px;"></div>
+    </div>
+    <div x-show="activeTab==='ai_report'" class="bg-white rounded-lg shadow-sm p-4 prose max-w-none" x-html="reportContent"></div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script>
+function sessionDetailApp() {
+    return {
+        activeTab: 'traffic',
+        tabs: [
+            {key:'traffic',label:'流量'},{key:'interaction',label:'互动'},{key:'conversion',label:'转化'},
+            {key:'leads',label:'线索'},{key:'comments',label:'评论'},{key:'high_intent',label:'高意向'},
+            {key:'funnel',label:'漏斗'},{key:'ai_report',label:'AI分析'}
+        ],
+        session: null, metrics: {}, leads: [], comments: [], highIntentUsers: [], reportContent: '', funnel: {}, anchors: [], isAdmin: false, allAnchors: [], selectedAnchorIds: [],
+        metricLabels: {
+            exposure_count:'曝光人数',cumulative_viewers:'累计观看',exposure_entry_rate:'曝光进入率',view_count:'观看次数',
+            watch_gt_1min:'>1分钟观看',avg_watch_duration:'人均观看时长',fan_stay_duration:'粉丝停留',
+            max_online:'最高在线',avg_online:'平均在线',realtime_online:'实时在线',
+            interaction_count:'互动次数',interaction_users:'互动人数',interaction_rate:'互动率',
+            comment_count:'评论次数',comment_users:'评论人数',comment_rate:'评论率',
+            like_count:'点赞次数',like_users:'点赞人数',like_rate:'点赞率',
+            share_count:'分享次数',share_users:'分享人数',follow_rate:'关注率',
+            new_followers:'涨粉量',fan_club_joins:'粉丝团',fan_club_rate:'加团率',fan_ratio:'粉丝占比',
+            gift_count:'打赏次数',gift_amount:'打赏金额',
+            total_leads:'留资人数',lead_conversion_rate:'留资转化率',phone_submits:'填手机号',
+            component_clicks:'组件点击',click_rate:'点击率',product_exposure:'商品曝光',
+            product_clicks:'商品点击',product_click_rate:'商品点击率',
+            gmv:'成交金额',order_count:'订单人数',marketing_orders:'营销订单',
+            ad_spend:'营销消耗',order_cost:'订单成本'
+        },
+        metricGroups: {
+            traffic: ['exposure_count','cumulative_viewers','exposure_entry_rate','view_count','watch_gt_1min','avg_watch_duration','fan_stay_duration','max_online','avg_online','realtime_online'],
+            interaction: ['interaction_count','interaction_users','interaction_rate','comment_count','comment_users','comment_rate','like_count','like_users','like_rate','share_count','share_users','follow_rate','new_followers','fan_club_joins','fan_club_rate','fan_ratio','gift_count','gift_amount'],
+            conversion: ['total_leads','lead_conversion_rate','phone_submits','component_clicks','click_rate','product_exposure','product_clicks','product_click_rate','gmv','order_count','marketing_orders','ad_spend','order_cost']
+        },
+        metricGroup(group) {
+            return (this.metricGroups[group]||[]).map(k => ({label: this.metricLabels[k]||k, value: this.metrics[k]??'--'}));
+        },
+        statusColor(s) { return s==='已留资'?'bg-green-100 text-green-800':(s==='忽略'?'bg-red-100 text-red-800':'bg-yellow-100 text-yellow-800'); },
+        formatCommentTime(t) {
+            if (!t) return '-';
+            // HH:MM格式(如"20:44") → 补全日期+秒
+            if (t.length <= 5 && this.session?.start_time) return this.session.start_time.slice(0,11) + t + ':00';
+            // MM-DD HH:MM格式(如"05-21 20:44") → 补全年份+秒
+            if (t.length <= 11 && this.session?.start_time) return this.session.start_time.slice(0,5) + t + ':00';
+            return t;
+        },
+        async loadData() {
+            const id = location.pathname.split('/').pop();
+            const resp = await fetch(`/api/sessions/${id}`);
+            const json = await resp.json();
+            const d = json.data || {};
+            this.session = d.session; this.metrics = d.metrics || {};
+            this.leads = d.leads || []; this.comments = d.comments || [];
+            this.highIntentUsers = d.high_intent_users || []; this.anchors = d.anchors || [];
+            this.selectedAnchorIds = d.anchors?.map(a=>a.id) || [];
+            this.reportContent = d.report?.content ? marked.parse(d.report.content) : '<p class="text-gray-500">暂无AI分析报告</p>';
+            this.funnel = d.funnel || {};
+            this.isAdmin = !!localStorage.getItem('token');
+            if (this.isAdmin) {
+                const anchorResp = await fetch('/admin/api/anchors', {headers:{'Authorization':'Bearer '+localStorage.getItem('token')}});
+                const anchorJson = await anchorResp.json();
+                this.allAnchors = anchorJson.data || [];
+            }
+            this.$nextTick(() => { if (this.activeTab==='funnel') this.renderFunnel(); });
+        },
+        async saveAnchors() {
+            const id = location.pathname.split('/').pop();
+            const resp = await fetch(`/admin/api/sessions/${id}/anchors`, {
+                method: 'POST',
+                headers: {'Authorization':'Bearer '+localStorage.getItem('token'), 'Content-Type':'application/json'},
+                body: JSON.stringify({anchor_ids: this.selectedAnchorIds})
+            });
+            const json = await resp.json();
+            if (json.code === 0) { alert('主播关联已保存'); location.reload(); }
+            else { alert(json.message || '保存失败'); }
+        },
+        renderFunnel() {
+            const el = document.getElementById('funnelChart');
+            if (!el) return;
+            const chart = echarts.init(el);
+            const funnelData = [
+                {value:this.funnel.exposure||0,name:'曝光'},
+                {value:this.funnel.view||0,name:'观看'},
+                {value:this.funnel.watch_gt_1min||0,name:'>1分钟'},
+                {value:this.funnel.interaction||0,name:'互动次数'},
+                {value:this.funnel.leads||0,name:'留资'}
+            ];
+            chart.setOption({series: [{type:'funnel',data:funnelData,
+                label:{show:true,formatter:function(p){
+                    const idx=p.dataIndex;
+                    if(idx===0) return p.name+'\n'+p.value;
+                    const prev=funnelData[idx-1].value;
+                    const rate=prev>0?((p.value/prev)*100).toFixed(1):0;
+                    return p.name+'\n'+p.value+'\n('+rate+'%)';
+                }}
+            }],tooltip:{trigger:'item'}});
+        }
+    };
+}
+</script>
+{% endblock %}

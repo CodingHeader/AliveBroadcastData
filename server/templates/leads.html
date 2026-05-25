@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block content %}
+<div x-data="leadsApp()" x-init="loadData()" class="space-y-6">
+    <h1 class="page-title">线索总览</h1>
+    <div class="flex space-x-4 flex-wrap">
+        <input x-model="keyword" placeholder="关键词" class="form-input max-w-xs text-sm py-1.5">
+        <select x-model="city" class="form-input max-w-xs text-sm py-1.5"><option value="">全部城市</option></select>
+        <button @click="loadData()" class="btn-primary text-sm py-1.5">查询</button>
+        <a href="/api/export/leads" class="btn-success text-sm py-1.5 no-underline">导出Excel</a>
+    </div>
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div class="bg-white rounded-lg shadow-sm p-5"><div id="sourcePie" style="height:300px;"></div></div>
+        <div class="bg-white rounded-lg shadow-sm p-5"><div id="cityPie" style="height:300px;"></div></div>
+    </div>
+    <div class="bg-white rounded-lg shadow-sm overflow-x-auto">
+        <table class="data-table"><thead><tr><th>时间</th><th>昵称</th><th>城市</th><th>路径</th><th>账户</th><th>成单</th></tr></thead>
+        <tbody><template x-for="l in leads"><tr><td x-text="l.lead_time"></td><td x-text="l.nickname"></td><td x-text="l.city"></td><td x-text="l.path"></td><td x-text="l.ad_account"></td><td x-text="l.is_deal?'是':'否'"></td></tr></template></tbody></table>
+    </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+function leadsApp() { return { keyword: '', city: '', leads: [], charts: {}, async loadData() { const resp = await fetch(`/api/leads?keyword=${this.keyword}&city=${this.city}`); const json = await resp.json(); this.leads = json.data?.items || []; this.charts = json.data?.charts || {}; this.renderPies(); }, renderPies() { if (this.charts.source) { const c = echarts.init(document.getElementById('sourcePie')); c.setOption({series:[{type:'pie',data:[{value:this.charts.source.paid,name:'付费'},{value:this.charts.source.organic,name:'自然'}]}]}); } } }; }
+</script>
+{% endblock %}

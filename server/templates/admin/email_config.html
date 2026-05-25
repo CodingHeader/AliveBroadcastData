@@ -1,0 +1,104 @@
+{% extends "admin/base.html" %}
+{% block admin_content %}
+<div x-data="emailConfigApp()" x-init="loadData()" class="space-y-4">
+    <h2 class="text-xl font-bold">邮箱配置</h2>
+    <div class="bg-white rounded-lg shadow-sm p-4 space-y-4">
+        <h3 class="font-semibold text-gray-700 border-b pb-2">SMTP设置</h3>
+        <div class="grid grid-cols-2 gap-4">
+            <div><label class="block text-sm font-medium mb-1">SMTP Host</label><input x-model="config.email_smtp_host" class="form-input"></div>
+            <div><label class="block text-sm font-medium mb-1">SMTP Port</label><input x-model="config.email_smtp_port" type="number" class="form-input"></div>
+        </div>
+        <div><label class="block text-sm font-medium mb-1">发件人邮箱</label><input x-model="config.email_sender" class="form-input"></div>
+        <div><label class="block text-sm font-medium mb-1">SMTP授权码</label><input x-model="config.email_password" type="password" class="form-input"></div>
+        <div><label class="block text-sm font-medium mb-1">全局收件人列表 (JSON数组)</label><textarea x-model="receiversStr" rows="2" class="form-input" placeholder='["user1@qq.com","user2@163.com"]'></textarea></div>
+        <div class="flex space-x-2"><button @click="saveConfig()" class="btn-primary">保存</button><button @click="testEmail()" class="btn-success">发送测试邮件</button></div>
+        <p x-show="msg" x-text="msg" class="text-sm"></p>
+    </div>
+
+    <div class="bg-white rounded-lg shadow-sm p-4 space-y-4">
+        <h3 class="font-semibold text-gray-700 border-b pb-2">推送规则</h3>
+        <p class="text-sm text-gray-500">配置各类型报告的推送开关和收件人。收件人留空则使用全局收件人。</p>
+
+        <div class="border rounded-lg p-4 space-y-3">
+            <div class="flex items-center justify-between">
+                <div>
+                    <span class="font-medium">日报推送</span>
+                    <span class="text-xs text-gray-500 ml-2">每天01:30发送，内容：前日数据汇总+AI摘要</span>
+                </div>
+                <label class="relative inline-flex items-center cursor-pointer">
+                    <input type="checkbox" x-model="pushDailyEnabled" class="sr-only peer">
+                    <div class="w-9 h-5 bg-gray-200 peer-focus:ring-2 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-600"></div>
+                </label>
+            </div>
+            <div><label class="block text-xs text-gray-500 mb-1">日报收件人 (JSON数组，留空用全局)</label><textarea x-model="pushDailyReceivers" rows="1" class="form-input text-sm" placeholder='留空使用全局收件人'></textarea></div>
+        </div>
+
+        <div class="border rounded-lg p-4 space-y-3">
+            <div class="flex items-center justify-between">
+                <div>
+                    <span class="font-medium">周报推送</span>
+                    <span class="text-xs text-gray-500 ml-2">每周一02:30发送，内容：周度总览+环比+主播表现+AI分析</span>
+                </div>
+                <label class="relative inline-flex items-center cursor-pointer">
+                    <input type="checkbox" x-model="pushWeeklyEnabled" class="sr-only peer">
+                    <div class="w-9 h-5 bg-gray-200 peer-focus:ring-2 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-600"></div>
+                </label>
+            </div>
+            <div><label class="block text-xs text-gray-500 mb-1">周报收件人 (JSON数组，留空用全局)</label><textarea x-model="pushWeeklyReceivers" rows="1" class="form-input text-sm" placeholder='留空使用全局收件人'></textarea></div>
+        </div>
+
+        <div class="border rounded-lg p-4 space-y-3">
+            <div class="flex items-center justify-between">
+                <div>
+                    <span class="font-medium">月报推送</span>
+                    <span class="text-xs text-gray-500 ml-2">每月1号03:30发送，内容：月度总览+周趋势+排行+ROI</span>
+                </div>
+                <label class="relative inline-flex items-center cursor-pointer">
+                    <input type="checkbox" x-model="pushMonthlyEnabled" class="sr-only peer">
+                    <div class="w-9 h-5 bg-gray-200 peer-focus:ring-2 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-600"></div>
+                </label>
+            </div>
+            <div><label class="block text-xs text-gray-500 mb-1">月报收件人 (JSON数组，留空用全局)</label><textarea x-model="pushMonthlyReceivers" rows="1" class="form-input text-sm" placeholder='留空使用全局收件人'></textarea></div>
+        </div>
+
+        <button @click="savePushConfig()" class="btn-primary">保存推送规则</button>
+        <p x-show="pushMsg" x-text="pushMsg" class="text-sm"></p>
+    </div>
+</div>
+<script>
+function emailConfigApp() { return { config: {}, receiversStr: '', msg: '',
+    pushDailyEnabled: true, pushDailyReceivers: '',
+    pushWeeklyEnabled: false, pushWeeklyReceivers: '',
+    pushMonthlyEnabled: false, pushMonthlyReceivers: '',
+    pushMsg: '',
+    async loadData() {
+        const r = await adminFetch('/admin/api/settings'); const j = await r.json(); this.config = j.data || {};
+        this.receiversStr = this.config.email_receivers || '[]';
+        this.pushDailyEnabled = this.config.push_daily_enabled === 'true';
+        this.pushDailyReceivers = this.config.push_daily_receivers || '[]';
+        this.pushWeeklyEnabled = this.config.push_weekly_enabled === 'true';
+        this.pushWeeklyReceivers = this.config.push_weekly_receivers || '[]';
+        this.pushMonthlyEnabled = this.config.push_monthly_enabled === 'true';
+        this.pushMonthlyReceivers = this.config.push_monthly_receivers || '[]';
+    },
+    async saveConfig() {
+        this.config.email_receivers = this.receiversStr;
+        await adminFetch('/admin/api/settings', {method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(this.config)});
+        this.msg='保存成功';
+    },
+    async savePushConfig() {
+        const data = {
+            push_daily_enabled: String(this.pushDailyEnabled),
+            push_daily_receivers: this.pushDailyReceivers || '[]',
+            push_weekly_enabled: String(this.pushWeeklyEnabled),
+            push_weekly_receivers: this.pushWeeklyReceivers || '[]',
+            push_monthly_enabled: String(this.pushMonthlyEnabled),
+            push_monthly_receivers: this.pushMonthlyReceivers || '[]',
+        };
+        await adminFetch('/admin/api/settings', {method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
+        this.pushMsg='推送规则保存成功';
+    },
+    async testEmail() { this.msg='发送中...'; const r = await adminFetch('/admin/api/email/test', {method:'POST'}); const j = await r.json(); this.msg = j.message || '已发送'; }
+}; }
+</script>
+{% endblock %}

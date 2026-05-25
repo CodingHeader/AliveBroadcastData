@@ -1,0 +1,18 @@
+{% extends "admin/base.html" %}
+{% block admin_content %}
+<div x-data="anchorsApp()" x-init="loadData()" class="space-y-4">
+    <div class="flex justify-between items-center">
+        <h2 class="text-xl font-bold">主播配置</h2>
+        <div class="flex space-x-2"><input x-model="newName" placeholder="主播名称" class="form-input max-w-xs"><button @click="addAnchor()" class="btn-primary">新增</button></div>
+    </div>
+    <div class="bg-white rounded-lg shadow-sm overflow-x-auto"><table class="data-table"><thead><tr><th>ID</th><th>名称</th><th>操作</th></tr></thead>
+    <tbody><template x-for="a in anchors"><tr><td x-text="a.id"></td><td x-text="a.name"></td><td><button @click="deleteAnchor(a.id)" class="text-red-500 hover:text-red-700 text-sm">删除</button></td></tr></template></tbody></table></div>
+</div>
+<script>
+function anchorsApp() { return { anchors: [], newName: '',
+    async loadData() { const r = await adminFetch('/admin/api/anchors'); const j = await r.json(); this.anchors = j.data || []; },
+    async addAnchor() { if(!this.newName) return; await adminFetch('/admin/api/anchors', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:this.newName})}); this.newName=''; this.loadData(); },
+    async deleteAnchor(id) { if(!confirm('确认删除?')) return; await adminFetch(`/admin/api/anchors/${id}`, {method:'DELETE'}); this.loadData(); }
+}; }
+</script>
+{% endblock %}

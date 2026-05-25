@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block content %}
+<div x-data="trendsApp()" x-init="loadData()" class="space-y-6">
+    <h1 class="page-title">趋势分析</h1>
+    <div class="flex flex-wrap gap-2 items-center">
+        <input type="date" x-model="dateFrom" class="form-input max-w-xs text-sm py-1.5">
+        <input type="date" x-model="dateTo" class="form-input max-w-xs text-sm py-1.5">
+        <select x-model="metric" class="form-input max-w-xs text-sm py-1.5"><option value="leads">线索</option><option value="spend">消耗</option><option value="lead_cost">线索成本</option></select>
+        <select x-model="anchorId" class="form-input max-w-xs text-sm py-1.5">
+            <option value="">全部主播</option>
+            <template x-for="a in anchors"><option :value="a.id" x-text="a.name"></option></template>
+        </select>
+        <button @click="loadData()" class="btn-primary text-sm py-1.5">查询</button>
+        <span class="text-xs text-gray-400">注：一场多主播的数据有重叠</span>
+    </div>
+    <div class="bg-white rounded-lg shadow-sm p-5"><h3 class="text-sm font-semibold text-gray-600 mb-3">趋势曲线</h3><div id="trendLineChart" style="height:400px;"></div></div>
+    <div class="bg-white rounded-lg shadow-sm p-5"><h3 class="text-sm font-semibold text-gray-600 mb-3">时段热力图</h3><div id="heatmapChart" style="height:400px;"></div></div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+function trendsApp() {
+    return {
+        dateFrom: '', dateTo: '', metric: 'leads', anchorId: '', anchors: [],
+        async init() {
+            const resp = await fetch('/admin/api/anchors');
+            const json = await resp.json();
+            this.anchors = json.data || [];
+            await this.loadData();
+        },
+        async loadData() {
+            const params = new URLSearchParams({date_from:this.dateFrom, date_to:this.dateTo, metric:this.metric});
+            if (this.anchorId) params.append('anchor_id', this.anchorId);
+            const resp = await fetch(`/api/trends?${params}`);
+            const json = await resp.json();
+            const data = json.data || [];
+            const chart = echarts.init(document.getElementById('trendLineChart'));
+            chart.setOption({xAxis:{type:'category',data:data.map(d=>d.date)},yAxis:{type:'value'},series:[{type:'line',data:data.map(d=>d[this.metric])}]});
+        }
+    };
+}
+</script>
+{% endblock %}

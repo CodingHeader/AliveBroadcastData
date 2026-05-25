@@ -1,0 +1,22 @@
+{% extends "admin/base.html" %}
+{% block admin_content %}
+<div x-data="aiConfigApp()" x-init="loadData()" class="space-y-4">
+    <h2 class="text-xl font-bold">AI配置</h2>
+    <div class="bg-white rounded-lg shadow-sm p-4 space-y-4">
+        <div><label class="block text-sm font-medium mb-1">API Key</label><input x-model="config.ai_api_key" type="password" class="form-input"></div>
+        <div><label class="block text-sm font-medium mb-1">Base URL</label><input x-model="config.ai_base_url" class="form-input"></div>
+        <div><label class="block text-sm font-medium mb-1">Model</label><input x-model="config.ai_model" class="form-input"></div>
+        <div><label class="block text-sm font-medium mb-1">系统提示词</label><textarea x-model="config.ai_system_prompt" rows="4" class="form-input"></textarea></div>
+        <div><label class="block text-sm font-medium mb-1">用户提示词模板</label><textarea x-model="config.ai_user_prompt_template" rows="4" class="form-input"></textarea></div>
+        <div class="flex space-x-2"><button @click="saveConfig()" class="btn-primary">保存</button><button @click="testConnection()" class="btn-success">测试连接</button></div>
+        <p x-show="msg" x-text="msg" class="text-sm"></p>
+    </div>
+</div>
+<script>
+function aiConfigApp() { return { config: {}, msg: '',
+    async loadData() { const r = await adminFetch('/admin/api/settings'); const j = await r.json(); this.config = j.data || {}; },
+    async saveConfig() { await adminFetch('/admin/api/settings', {method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(this.config)}); this.msg='保存成功'; },
+    async testConnection() { this.msg='测试中...'; try { const r = await fetch(this.config.ai_base_url||'https://api.openai.com/v1'); this.msg='连接正常'; } catch(e) { this.msg='连接失败: '+e.message; } }
+}; }
+</script>
+{% endblock %}

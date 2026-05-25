@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"></head>
+<body style="margin:0;padding:0;background:#f5f5f5;font-family:-apple-system,'Microsoft YaHei',sans-serif;">
+<div style="max-width:700px;margin:0 auto;padding:20px;">
+    <!-- 深色品牌头 -->
+    <div style="background:#1f2937;border-radius:8px 8px 0 0;padding:20px 24px;color:#fff;">
+        <h1 style="margin:0;font-size:20px;">直播核心数据 | {{ date }}</h1>
+        <p style="margin:4px 0 0;font-size:13px;color:#9ca3af;">抖音直播数据分析系统</p>
+    </div>
+    <!-- 6项KPI卡片 -->
+    <div style="background:#fff;padding:20px 24px;">
+        <table style="width:100%;border-collapse:collapse;">
+        <tr>
+            <td style="padding:12px;text-align:center;border:1px solid #e8e8e8;width:33%;">
+                <div style="font-size:28px;font-weight:bold;color:#3b82f6;">{{ total_duration_text }}</div>
+                <div style="color:#999;font-size:12px;">总时长</div>
+            </td>
+            <td style="padding:12px;text-align:center;border:1px solid #e8e8e8;width:33%;">
+                <div style="font-size:28px;font-weight:bold;color:#f59e0b;">¥{{ total_spend }}</div>
+                <div style="color:#999;font-size:12px;">总消耗</div>
+            </td>
+            <td style="padding:12px;text-align:center;border:1px solid #e8e8e8;width:33%;">
+                <div style="font-size:28px;font-weight:bold;color:#10b981;">{{ total_leads }}</div>
+                <div style="color:#999;font-size:12px;">线索数</div>
+            </td>
+        </tr>
+        <tr>
+            <td style="padding:12px;text-align:center;border:1px solid #e8e8e8;">
+                <div style="font-size:28px;font-weight:bold;color:#6366f1;">{{ total_pm }}</div>
+                <div style="color:#999;font-size:12px;">私信人数</div>
+            </td>
+            <td style="padding:12px;text-align:center;border:1px solid #e8e8e8;">
+                <div style="font-size:28px;font-weight:bold;color:#8b5cf6;">{{ total_lead_users }}</div>
+                <div style="color:#999;font-size:12px;">留资人数</div>
+            </td>
+            <td style="padding:12px;text-align:center;border:1px solid #e8e8e8;">
+                <div style="font-size:28px;font-weight:bold;color:#ec4899;">{{ total_high_intent }}</div>
+                <div style="color:#999;font-size:12px;">高意向人数</div>
+            </td>
+        </tr>
+        </table>
+    </div>
+    <!-- 分场次明细 -->
+    <div style="background:#fff;border-radius:0 0 8px 8px;padding:0 24px 24px;">
+        <h3 style="color:#374151;font-size:15px;border-bottom:1px solid #e5e7eb;padding-bottom:8px;">场次明细（共{{ session_count }}场）</h3>
+        <table style="width:100%;border-collapse:collapse;font-size:13px;">
+        <thead>
+        <tr style="background:#f9fafb;">
+            <th style="padding:8px 6px;text-align:left;border-bottom:2px solid #e5e7eb;">场次</th>
+            <th style="padding:8px 6px;text-align:center;border-bottom:2px solid #e5e7eb;">时长</th>
+            <th style="padding:8px 6px;text-align:center;border-bottom:2px solid #e5e7eb;">消耗</th>
+            <th style="padding:8px 6px;text-align:center;border-bottom:2px solid #e5e7eb;">线索</th>
+            <th style="padding:8px 6px;text-align:center;border-bottom:2px solid #e5e7eb;">私信</th>
+            <th style="padding:8px 6px;text-align:center;border-bottom:2px solid #e5e7eb;">留资</th>
+            <th style="padding:8px 6px;text-align:center;border-bottom:2px solid #e5e7eb;">高意向</th>
+        </tr>
+        </thead>
+        <tbody>
+        {% for s in sessions %}
+        <tr{% if loop.index is odd %} style="background:#fafbfc;"{% endif %}>
+            <td style="padding:8px 6px;border-bottom:1px solid #f0f0f0;">{{ s.start_time[11:16] }}~{{ s.end_time[11:16] }}</td>
+            <td style="padding:8px 6px;text-align:center;border-bottom:1px solid #f0f0f0;">{{ s.duration_text }}</td>
+            <td style="padding:8px 6px;text-align:center;border-bottom:1px solid #f0f0f0;color:#f59e0b;font-weight:600;">¥{{ s.spend }}</td>
+            <td style="padding:8px 6px;text-align:center;border-bottom:1px solid #f0f0f0;color:#10b981;font-weight:600;">{{ s.leads }}</td>
+            <td style="padding:8px 6px;text-align:center;border-bottom:1px solid #f0f0f0;">{{ s.pm_count }}</td>
+            <td style="padding:8px 6px;text-align:center;border-bottom:1px solid #f0f0f0;color:#8b5cf6;font-weight:600;">{{ s.lead_users }}</td>
+            <td style="padding:8px 6px;text-align:center;border-bottom:1px solid #f0f0f0;color:#ec4899;font-weight:600;">{{ s.high_intent }}</td>
+        </tr>
+        {% if s.ai_summary %}
+        <tr>
+            <td colspan="7" style="padding:6px 8px 10px;border-bottom:1px solid #f0f0f0;">
+                <div style="background:#f0f7ff;border-left:3px solid #3b82f6;padding:8px 10px;border-radius:4px;font-size:12px;color:#555;">
+                    <strong style="color:#3b82f6;">AI：</strong>{{ s.ai_summary }}
+                </div>
+            </td>
+        </tr>
+        {% endif %}
+        {% endfor %}
+        </tbody>
+        </table>
+    </div>
+    <div style="text-align:center;padding:16px;color:#9ca3af;font-size:12px;">
+        此邮件由系统自动发送，请勿回复 | 抖音直播数据分析系统
+    </div>
+</div>
+</body>
+</html>

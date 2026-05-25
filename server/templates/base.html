@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}抖音直播数据分析{% endblock %}</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style type="text/tailwindcss">
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+        .sidebar-link { @apply block px-3 py-2 rounded hover:bg-gray-700 transition-all duration-200; }
+        .sidebar-link.active { @apply bg-gray-700 text-white font-medium; }
+        .card { @apply bg-white rounded-lg shadow p-4; }
+        .kpi-card { @apply bg-white rounded-lg shadow-sm border-l-4 p-5 hover:shadow-md transition-shadow duration-200; }
+        .data-table { @apply min-w-full; }
+        .data-table thead { @apply bg-gray-50; }
+        .data-table th { @apply px-4 py-3 text-left text-sm font-medium text-gray-600; }
+        .data-table td { @apply px-4 py-3 text-sm; }
+        .data-table tbody tr { @apply border-t hover:bg-gray-50 transition-colors; }
+        .data-table tbody tr:nth-child(even) { @apply bg-gray-50/50; }
+        .btn-primary { @apply bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 transition-colors duration-200; }
+        .btn-success { @apply bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700 transition-colors duration-200; }
+        .btn-danger { @apply bg-red-600 text-white px-4 py-2 rounded hover:bg-red-700 transition-colors duration-200; }
+        .page-title { @apply text-2xl font-bold text-gray-900 pb-3 mb-4 border-b border-gray-200; }
+        .form-input { @apply w-full border border-gray-300 rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors; }
+        .nav-link-dark { @apply text-gray-300 hover:text-white px-4 py-2 rounded transition-colors duration-200; }
+        .nav-link-dark.active { @apply text-white bg-gray-800; }
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3/dist/cdn.min.js"></script>
+</head>
+<body class="bg-gray-50 min-h-screen">
+    <nav class="bg-gray-900 shadow-lg" x-data="{currentPath: location.pathname}">
+        <div class="max-w-screen-2xl mx-auto px-4 lg:px-8">
+            <div class="flex justify-between h-14 items-center">
+                <a href="/" class="text-xl font-bold text-white flex items-center gap-2">
+                    <svg class="w-7 h-7 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
+                    抖音直播数据分析
+                </a>
+                <div class="hidden md:flex space-x-1">
+                    <a href="/" :class="currentPath==='/' ? 'nav-link-dark active' : 'nav-link-dark'" class="nav-link-dark">看板</a>
+                    <a href="/reports" :class="currentPath.includes('/reports') ? 'nav-link-dark active' : 'nav-link-dark'" class="nav-link-dark">报告</a>
+                    <a href="/trends" :class="currentPath.includes('/trends') ? 'nav-link-dark active' : 'nav-link-dark'" class="nav-link-dark">趋势</a>
+                    <a href="/leads" :class="currentPath.includes('/leads') ? 'nav-link-dark active' : 'nav-link-dark'" class="nav-link-dark">线索</a>
+                </div>
+            </div>
+        </div>
+    </nav>
+    <main class="max-w-screen-2xl mx-auto px-4 lg:px-8 py-6">
+        {% block content %}{% endblock %}
+    </main>
+    <script src="/static/js/app.js"></script>
+    {% block scripts %}{% endblock %}
+</body>
+</html>

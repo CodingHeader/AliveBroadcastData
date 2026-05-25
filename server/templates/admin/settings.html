@@ -1,0 +1,28 @@
+{% extends "admin/base.html" %}
+{% block admin_content %}
+<div x-data="settingsApp()" x-init="loadData()" class="space-y-4">
+    <h2 class="text-xl font-bold">系统设置</h2>
+    <div class="bg-white rounded-lg shadow-sm p-4 space-y-4">
+        <h3 class="font-bold">修改密码</h3>
+        <div><label class="block text-sm font-medium mb-1">原密码</label><input x-model="oldPwd" type="password" class="form-input"></div>
+        <div><label class="block text-sm font-medium mb-1">新密码</label><input x-model="newPwd" type="password" class="form-input"></div>
+        <button @click="changePwd()" class="btn-primary">修改密码</button>
+        <p x-show="pwdMsg" x-text="pwdMsg" class="text-sm"></p>
+    </div>
+    <div class="bg-white rounded-lg shadow-sm p-4 space-y-4">
+        <h3 class="font-bold">系统信息</h3>
+        <div class="grid grid-cols-2 gap-4 text-sm">
+            <div>数据库: <span class="font-mono">data.db</span></div>
+            <div>场次总数: <span x-text="stats.sessions||0"></span></div>
+            <div>线索总数: <span x-text="stats.leads||0"></span></div>
+            <div>最近同步: <span x-text="stats.last_sync||'-'"></span></div>
+        </div>
+    </div>
+</div>
+<script>
+function settingsApp() { return { oldPwd: '', newPwd: '', pwdMsg: '', stats: {},
+    async loadData() { const r = await adminFetch('/admin/api/settings'); const j = await r.json(); const d = j.data || {}; this.stats = {sessions: d.session_count||0, leads: d.lead_count||0, last_sync: d.last_sync||'-'}; },
+    async changePwd() { if(!this.oldPwd||!this.newPwd) { this.pwdMsg='请填写完整'; return; } const r = await adminFetch('/admin/api/settings/password', {method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({old_password:this.oldPwd,new_password:this.newPwd})}); const j = await r.json(); this.pwdMsg = j.message || '修改成功'; }
+}; }
+</script>
+{% endblock %}

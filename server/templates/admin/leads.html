@@ -1,0 +1,119 @@
+{% extends "admin/base.html" %}
+{% block title %}线索管理{% endblock %}
+{% block admin_content %}
+<div x-data="leadsAdminApp()" x-init="loadLeads()" class="space-y-4">
+    <div class="flex flex-wrap gap-2 items-center bg-white p-4 rounded-lg shadow-sm">
+        <input type="text" x-model="filters.keyword" @input.debounce.500ms="loadLeads()" placeholder="搜索昵称" class="form-input max-w-xs text-sm py-1.5">
+        <select x-model="filters.city" @change="loadLeads()" class="form-input max-w-xs text-sm py-1.5">
+            <option value="">全部城市</option>
+            <template x-for="c in cities"><option :value="c" x-text="c"></option></template>
+        </select>
+        <select x-model="filters.is_valid" @change="loadLeads()" class="form-input max-w-xs text-sm py-1.5">
+            <option value="">全部有效性</option>
+            <option value="true">有效</option>
+            <option value="false">无效</option>
+            <option value="null">未验证</option>
+        </select>
+        <div class="ml-auto text-sm text-gray-500">共 <span x-text="total"></span> 条</div>
+    </div>
+    <div x-show="selectedIds.length>0" class="bg-blue-50 p-3 rounded flex gap-2">
+        <span class="text-sm">已选 <span x-text="selectedIds.length"></span> 条</span>
+        <button @click="batchMark(true)" class="btn-success text-sm py-1 px-3">标记有效</button>
+        <button @click="batchMark(false)" class="btn-danger text-sm py-1 px-3">标记无效</button>
+    </div>
+    <div class="bg-white rounded-lg shadow-sm overflow-x-auto">
+        <table class="data-table">
+            <thead><tr>
+                <th><input type="checkbox" @change="toggleAll($event.target.checked)"></th>
+                <th>昵称</th><th>城市</th><th>留资时间</th>
+                <th>路径</th><th>标签</th><th>有效性</th><th>分配员工</th><th>成单</th>
+            </tr></thead>
+            <tbody>
+                <template x-for="l in leads" :key="l.id">
+                    <tr>
+                        <td><input type="checkbox" :value="l.id" x-model="selectedIds"></td>
+                        <td x-text="l.nickname"></td>
+                        <td x-text="l.city||'-'"></td>
+                        <td x-text="l.lead_time"></td>
+                        <td x-text="l.path||'-'"></td>
+                        <td x-text="l.tags||'-'"></td>
+                        <td>
+                            <select @change="markValid(l.id,$event.target.value)" class="form-input text-sm py-1" :value="l.is_valid===null?'null':String(l.is_valid)">
+                                <option value="null">未验证</option><option value="true">有效</option><option value="false">无效</option>
+                            </select>
+                        </td>
+                        <td>
+                            <input type="text" x-model="l.assigned_employee" @blur="assignEmployee(l.id, l.assigned_employee)" placeholder="-" class="form-input text-xs py-1 w-20" :value="l.assigned_employee||''">
+                        </td>
+                        <td>
+                            <span x-show="l.is_deal" class="bg-green-100 text-green-800 px-2 py-1 rounded text-xs">已成单 ✓</span>
+                            <button x-show="!l.is_deal" @click="showDealModal(l)" class="btn-success text-xs py-1 px-2">标记成单 💰</button>
+                        </td>
+                    </tr>
+                </template>
+            </tbody>
+        </table>
+    </div>
+    <div class="flex justify-between items-center">
+        <button @click="page--;loadLeads()" :disabled="page<=1" class="px-3 py-1 border rounded disabled:opacity-50">上一页</button>
+        <span class="text-sm">第 <span x-text="page"></span> 页</span>
+        <button @click="page++;loadLeads()" :disabled="page*pageSize>=total" class="px-3 py-1 border rounded disabled:opacity-50">下一页</button>
+    </div>
+</div>
+<div x-show="dealModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center" style="display:none" x-cloak>
+    <div class="bg-white p-6 rounded-lg shadow-xl w-[400px] space-y-3">
+        <h3 class="font-bold">标记成单</h3>
+        <input x-model="dealForm.customer_name" placeholder="客户姓名" class="form-input">
+        <input x-model="dealForm.amount" type="number" placeholder="成交金额" class="form-input">
+        <input x-model="dealForm.deal_time" type="date" class="form-input">
+        <input x-model="dealForm.employee" placeholder="负责员工" class="form-input">
+        <div class="flex space-x-2">
+            <button @click="saveDeal()" class="btn-primary">保存</button>
+            <button @click="dealModal=false" class="bg-gray-200 px-4 py-2 rounded hover:bg-gray-300">取消</button>
+        </div>
+    </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+function leadsAdminApp() {
+    return {
+        leads:[], total:0, page:1, pageSize:20, selectedIds:[],
+        filters:{keyword:'',city:'',is_valid:''}, cities:[],
+        dealModal:false, dealForm:{customer_name:'',amount:'',deal_time:'',employee:'',lead_id:null,session_id:null},
+        async loadLeads() {
+            const params = new URLSearchParams({page:this.page,size:this.pageSize,...this.filters});
+            const resp = await fetch(`/admin/api/leads?${params}`,{headers:{'Authorization':'Bearer '+localStorage.getItem('token')}});
+            const json = await resp.json();
+            this.leads = json.data?.items||[]; this.total = json.data?.total||0;
+            const uniqueCities = [...new Set(this.leads.map(l=>l.city).filter(Boolean))];
+            this.cities = uniqueCities.slice(0,20);
+        },
+        async markValid(id,val) {
+            const v = val==='null'?null:(val==='true');
+            await fetch(`/admin/api/leads/${id}`,{method:'PUT',headers:{'Authorization':'Bearer '+localStorage.getItem('token'),'Content-Type':'application/json'},body:JSON.stringify({is_valid:v})});
+            this.loadLeads();
+        },
+        async batchMark(valid) {
+            await fetch('/admin/api/leads/batch',{method:'POST',headers:{'Authorization':'Bearer '+localStorage.getItem('token'),'Content-Type':'application/json'},body:JSON.stringify({lead_ids:this.selectedIds,is_valid:valid})});
+            this.selectedIds=[]; this.loadLeads();
+        },
+        async assignEmployee(id, employee) {
+            await fetch(`/admin/api/leads/${id}`,{method:'PUT',headers:{'Authorization':'Bearer '+localStorage.getItem('token'),'Content-Type':'application/json'},body:JSON.stringify({assigned_employee:employee||null})});
+        },
+        toggleAll(checked) { this.selectedIds = checked ? this.leads.map(l=>l.id) : []; },
+        showDealModal(lead) {
+            this.dealForm = {customer_name:lead.nickname, amount:'', deal_time:new Date().toISOString().slice(0,10), employee:'', lead_id:lead.id, session_id:lead.session_id};
+            this.dealModal = true;
+        },
+        async saveDeal() {
+            const body = JSON.stringify(this.dealForm);
+            const resp = await fetch('/admin/api/deals', {method:'POST', headers:{'Authorization':'Bearer '+localStorage.getItem('token'), 'Content-Type':'application/json'}, body});
+            const json = await resp.json();
+            if (json.code !== 0) { alert(json.message || '操作失败'); return; }
+            this.dealModal = false; this.loadLeads();
+        }
+    };
+}
+</script>
+{% endblock %}

@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"></head>
+<body style="font-family:-apple-system,'Microsoft YaHei',sans-serif;max-width:700px;margin:0 auto;padding:20px;background:#f5f5f5;">
+    <div style="background:#fff;border-radius:8px;padding:24px;">
+        <h1 style="color:#1a1a1a;border-bottom:2px solid #1890ff;">📊 直播速报 | {{ time_range }}</h1>
+        <table style="width:100%;border-collapse:collapse;margin-top:16px;">
+            <tr><td style="padding:8px;border:1px solid #e8e8e8;">线索</td><td><strong>{{ leads }}</strong>个</td></tr>
+            <tr><td style="padding:8px;border:1px solid #e8e8e8;">消耗</td><td><strong>¥{{ spend }}</strong></td></tr>
+            <tr><td style="padding:8px;border:1px solid #e8e8e8;">时长</td><td>{{ duration }}分钟</td></tr>
+        </table>
+    </div>
+    <div style="text-align:center;color:#999;font-size:12px;padding:16px;">此邮件由 AliveBroadcastData 系统自动发送</div>
+</body>
+</html>

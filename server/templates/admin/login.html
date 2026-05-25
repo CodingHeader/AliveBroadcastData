@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block content %}
+<div x-data="loginApp()" class="min-h-screen flex items-center justify-center">
+    <div class="bg-white p-8 rounded-lg shadow-md w-96">
+        <h2 class="text-xl font-bold mb-6 text-center">后台管理登录</h2>
+        <input x-model="username" placeholder="账号" class="w-full border rounded px-3 py-2 mb-4">
+        <input x-model="password" type="password" placeholder="密码" class="w-full border rounded px-3 py-2 mb-4">
+        <p x-show="error" x-text="error" class="text-red-500 text-sm mb-4"></p>
+        <button @click="doLogin()" class="w-full bg-blue-600 text-white py-2 rounded hover:bg-blue-700">登 录</button>
+    </div>
+</div>
+<script>
+function loginApp() { return { username: '', password: '', error: '', async doLogin() { const resp = await fetch('/admin/api/login', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:this.username,password:this.password})}); const data = await resp.json(); if(data.code===0){localStorage.setItem('admin_token',data.token);location.href='/admin/deals'}else{this.error=data.detail||'登录失败'} } }; }
+</script>
+{% endblock %}
