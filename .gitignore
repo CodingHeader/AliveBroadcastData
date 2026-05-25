@@ -34,6 +34,19 @@ nul
 # 日志
 *.log
 
+# 示例数据
+.data/
+
 # 临时文件
 *.tmp
 *.bak
+*备份副本*
+
+# AI工具配置
+.opencode/
+.windsurf/
+.docs/parse-execution/
+.docs/phases/
+
+# plans
+C:/Users/EDY/.windsurf/plans/

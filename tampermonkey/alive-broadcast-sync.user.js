@@ -18,7 +18,7 @@
 
     // ========== 配置区 ==========
     const CONFIG = {
-        SERVER_URL: 'http://36.134.158.50:12306',
+        SERVER_URL: 'http://YOUR_SERVER_IP:12306',
         CHECK_INTERVAL: 60 * 1000,
         COLLECT_HOUR: 1,       // 凌晨1点启动自动采集
         RETRY_COUNT: 3,

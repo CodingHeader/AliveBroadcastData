@@ -106,14 +106,14 @@ def init_db():
             ("email_smtp_port", "465"),
             ("email_sender", os.getenv("EMAIL_SENDER", "")),
             ("email_password", os.getenv("EMAIL_PASSWORD", "")),
-            ("email_receivers", os.getenv("EMAIL_RECEIVERS", '["164093410@qq.com"]')),
+            ("email_receivers", os.getenv("EMAIL_RECEIVERS", '["your_email@example.com"]')),
             ("push_frequency", "daily"),
             ("push_daily_enabled", "true"),
-            ("push_daily_receivers", '["164093410@qq.com"]'),
+            ("push_daily_receivers", '["your_email@example.com"]'),
             ("push_weekly_enabled", "true"),
-            ("push_weekly_receivers", '["164093410@qq.com"]'),
+            ("push_weekly_receivers", '["your_email@example.com"]'),
             ("push_monthly_enabled", "true"),
-            ("push_monthly_receivers", '["164093410@qq.com"]'),
+            ("push_monthly_receivers", '["your_email@example.com"]'),
         ]
         
         for key, value in default_settings:
