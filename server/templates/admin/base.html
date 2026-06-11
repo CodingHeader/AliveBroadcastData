@@ -17,20 +17,29 @@ if (typeof adminFetch === 'undefined') {
 }
 // 侧边栏应用（SPA无刷新导航 + localStorage持久化折叠状态）
 function sidebarApp() {
+    // 首次进入：菜单全缩起；后续访问：恢复localStorage保存的状态
+    const _initPath = location.pathname;
+    const _knownPaths = {anchor:['anchors','anchor-income','anchor-salary'],schedule:['schedules','schedule-calendar','schedule-log'],plan:['ad-accounts','ad-plans','leads'],extend:['deals','recruit-teams'],config:['/admin/ai','/admin/email','/admin/settings','clue-configs','dashboard-tabs','poll-logs']};
+    const _hasSaved = localStorage.getItem('sidebar_expand') !== null;
+    const _savedExpand = _hasSaved ? JSON.parse(localStorage.getItem('sidebar_expand')) : {anchor:false,schedule:false,plan:false,extend:false,config:false};
+    // 仅当localStorage有保存记录时，才根据当前路径自动展开
+    if (_hasSaved) {
+        Object.keys(_knownPaths).forEach(k => {
+            _knownPaths[k].forEach(p => { if (_initPath.includes(p)) _savedExpand[k] = true; });
+        });
+    }
     return {
-        expand: JSON.parse(localStorage.getItem('sidebar_expand') || '{"anchor":false,"schedule":false,"plan":false,"extend":false,"config":false}'),
-        // 使用响应的 _path 追踪当前路径
+        expand: _savedExpand,
         _path: location.pathname,
-        _knownPaths: {anchor:['anchors','anchor-income','anchor-salary'],schedule:['schedules','schedule-calendar','schedule-log'],plan:['ad-accounts','ad-plans','leads'],extend:['deals','recruit-teams'],config:['/admin/ai','/admin/email','/admin/settings','clue-configs','dashboard-tabs','poll-logs']},
+        _knownPaths: _knownPaths,
         init() {
-            this._autoExpand();
             this._saveExpand();
             window.addEventListener('popstate', (e) => { this._path = location.pathname; this._autoExpand(); this._saveExpand(); this.loadContent(location.pathname, true); });
         },
         _autoExpand() {
             const a = this._path;
             Object.keys(this._knownPaths).forEach(k => {
-                this._knownPaths[k].forEach(p => { if (a.includes(p)) this.expand[k] = true; });
+                this._knownPaths[k].forEach(p => { if (a.includes(p) && !this.expand[k]) this.expand[k] = true; });
             });
         },
         _saveExpand() {
@@ -53,22 +62,29 @@ function sidebarApp() {
             this.loadContent(url);
         },
         async loadContent(url, isPopState = false) {
-            if (!isPopState && url === location.pathname) return;
             try {
                 const resp = await adminFetch(url);
                 const html = await resp.text();
-                const mainMatch = html.match(/<main[^>]*>([\s\S]*?)<\/main>/i);
+                // 匹配admin内容区的main标签（class含flex-1和bg-gray-50）
+                const mainMatch = html.match(/<main[^>]*class="[^"]*flex-1[^"]*bg-gray-50[^"]*"[^>]*>([\s\S]*)<\/main>\s*<\/div>/i);
                 if (mainMatch) {
-                    document.querySelector('main').innerHTML = mainMatch[1];
-                    Array.from(document.querySelectorAll('main script')).forEach(oldScript => {
-                        const newScript = document.createElement('script');
-                        Array.from(oldScript.attributes).forEach(attr => newScript.setAttribute(attr.name, attr.value));
-                        newScript.textContent = oldScript.textContent;
-                        oldScript.replaceWith(newScript);
-                    });
-                    if (typeof Alpine !== 'undefined') {
-                        Alpine.initTree(document.querySelector('main'));
+                    const adminMain = document.querySelector('main.flex-1') || document.querySelectorAll('main')[1];
+                    if (adminMain) {
+                        adminMain.innerHTML = mainMatch[1];
+                        Array.from(adminMain.querySelectorAll('script')).forEach(oldScript => {
+                            const newScript = document.createElement('script');
+                            Array.from(oldScript.attributes).forEach(attr => newScript.setAttribute(attr.name, attr.value));
+                            newScript.textContent = oldScript.textContent;
+                            oldScript.replaceWith(newScript);
+                        });
+                        if (typeof Alpine !== 'undefined') {
+                            Alpine.initTree(adminMain);
+                        }
                     }
+                } else {
+                    // fallback: 整页刷新
+                    location.href = url;
+                    return;
                 }
                 if (!isPopState) {
                     history.pushState({}, '', url);
@@ -162,7 +178,12 @@ function sidebarApp() {
                 </div>
             </div>
         </nav>
-        <div class="pt-4 border-t border-gray-700">
+        <div class="pt-4 border-t border-gray-700 space-y-1">
+            <a href="/clue-board" target="_blank" class="sidebar-link flex items-center gap-2 text-gray-400 hover:text-white">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                线索领取看板
+                <span class="text-xs text-gray-500 ml-auto">新窗口</span>
+            </a>
             <button onclick="localStorage.removeItem('admin_token');location.href='/admin/login'" class="sidebar-link flex items-center gap-2 text-gray-400 hover:text-red-400 w-full">
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/></svg>
                 退出登录
