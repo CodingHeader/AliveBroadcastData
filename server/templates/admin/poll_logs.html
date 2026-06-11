@@ -1,0 +1,302 @@
+{% extends "admin/base.html" %}
+{% block admin_content %}
+<div x-data="pollLogs()" x-init="init()">
+    <div class="flex items-center justify-between mb-6">
+        <h2 class="text-xl font-bold text-gray-800">线索推送</h2>
+        <div class="flex gap-3">
+            <button @click="toggleScheduler()"
+                    :class="schedulerPaused ? 'bg-green-600 hover:bg-green-700' : 'bg-orange-500 hover:bg-orange-600'"
+                    class="text-white px-4 py-2 rounded-lg text-sm"
+                    x-text="schedulerPaused ? '▶ 恢复调度' : '⏸ 暂停调度'"></button>
+            <button @click="assignHistory()" class="bg-purple-600 text-white px-4 py-2 rounded-lg hover:bg-purple-700 text-sm">分配历史线索</button>
+            <button @click="pollNow()" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 text-sm">立即采集</button>
+            <button @click="load()" class="bg-gray-100 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-200 text-sm">刷新</button>
+        </div>
+    </div>
+
+    <!-- 暂停提示 -->
+    <div x-show="schedulerPaused" class="bg-orange-50 border border-orange-200 rounded-lg p-3 mb-4 text-sm text-orange-700">
+        调度器已暂停，所有自动任务（线索轮询/分配/日报/邮件/AI分析）已停止运行。手动操作不受影响。
+    </div>
+
+    <!-- 全局推送配置 -->
+    <div class="bg-white rounded-lg shadow-sm p-4 mb-4">
+        <div class="flex items-center justify-between mb-3">
+            <h3 class="font-semibold text-gray-700">全局推送设置</h3>
+            <button @click="saveGlobalConfig()" class="bg-blue-600 text-white px-3 py-1 rounded text-sm hover:bg-blue-700">保存全局设置</button>
+            <span x-show="globalSaved" class="text-green-600 text-xs">已保存</span>
+        </div>
+        <div class="flex items-center gap-6">
+            <div class="flex items-center gap-2">
+                <span class="text-sm text-gray-500">全局推送开关</span>
+                <button @click="pushEnabled = !pushEnabled"
+                        :class="pushEnabled ? 'bg-green-500' : 'bg-gray-300'"
+                        class="relative w-11 h-6 rounded-full transition-colors">
+                    <span :class="pushEnabled ? 'translate-x-5' : 'translate-x-0'"
+                          class="inline-block w-5 h-5 bg-white rounded-full shadow transition-transform"></span>
+                </button>
+                <span class="text-xs" :class="pushEnabled ? 'text-green-600' : 'text-gray-400'" x-text="pushEnabled ? '已开启' : '已关闭'"></span>
+            </div>
+            <div class="flex items-center gap-2">
+                <label class="text-sm text-gray-600">推送时间区间</label>
+                <input type="number" x-model.number="pushTimeRangeDays" min="1" max="30"
+                       class="w-16 px-2 py-1 border rounded text-sm text-center">
+                <span class="text-sm text-gray-500">天内的新线索</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- 逐团队推送配置 -->
+    <template x-for="(team, idx) in teams" :key="team.team_id">
+        <div class="bg-white rounded-lg shadow-sm p-4 mb-3">
+            <div class="flex items-center justify-between mb-3">
+                <h3 class="font-semibold text-gray-700" x-text="'团队：' + team.team_name"></h3>
+                <div class="flex items-center gap-2">
+                    <span class="text-sm text-gray-500">推送开关</span>
+                    <button @click="team.push_enabled = !team.push_enabled; team._dirty = true"
+                            :class="team.push_enabled ? 'bg-green-500' : 'bg-gray-300'"
+                            class="relative w-11 h-6 rounded-full transition-colors">
+                        <span :class="team.push_enabled ? 'translate-x-5' : 'translate-x-0'"
+                              class="inline-block w-5 h-5 bg-white rounded-full shadow transition-transform"></span>
+                    </button>
+                    <span class="text-xs" :class="team.push_enabled ? 'text-green-600' : 'text-gray-400'" x-text="team.push_enabled ? '已开启' : '已关闭'"></span>
+                </div>
+            </div>
+            <div class="flex items-center gap-6">
+                <div class="flex items-center gap-2">
+                    <label class="text-sm text-gray-600">分配模式</label>
+                    <select x-model="team.assign_mode" @change="team._dirty = true"
+                            class="border rounded px-2 py-1 text-sm">
+                        <option value="round_robin">轮流分配（依次分给每位员工）</option>
+                        <option value="single">单人分配（全部分给指定员工）</option>
+                    </select>
+                </div>
+                <div class="flex items-center gap-2" x-show="team.assign_mode === 'single'">
+                    <label class="text-sm text-gray-600">指定员工</label>
+                    <select x-model="team.assignee_id" @change="team._dirty = true"
+                            class="border rounded px-2 py-1 text-sm">
+                        <option value="">请选择</option>
+                        <template x-for="emp in team.employees" :key="emp.id">
+                            <option :value="emp.id" x-text="emp.name"></option>
+                        </template>
+                    </select>
+                </div>
+                <button @click="saveTeamConfig(team)" class="bg-blue-600 text-white px-3 py-1 rounded text-sm hover:bg-blue-700"
+                        x-show="team._dirty">保存</button>
+                <span x-show="team._saved" class="text-green-600 text-xs">已保存</span>
+            </div>
+            <div class="text-xs text-gray-400 mt-2" x-text="'团队员工：' + team.employees.map(e => e.name).join('、')"></div>
+        </div>
+    </template>
+
+    <!-- 说明 -->
+    <div class="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-4 text-sm text-blue-700">
+        <strong>💡 说明：</strong>
+        采集与推送已解耦：油猴脚本和API采集只负责入库，推送由调度器独立管理。
+        每个团队可独立开关推送和选择分配模式。
+        全局推送关闭后，所有团队均不推送。
+    </div>
+
+    <!-- 统计卡片 -->
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+        <div class="bg-white p-3 rounded-lg shadow-sm border-l-4 border-l-blue-500">
+            <div class="text-xs text-gray-500">总采集次数</div>
+            <div class="text-lg font-bold" x-text="logs.length"></div>
+        </div>
+        <div class="bg-white p-3 rounded-lg shadow-sm border-l-4 border-l-green-500">
+            <div class="text-xs text-gray-500">成功次数</div>
+            <div class="text-lg font-bold text-green-600" x-text="logs.filter(l => l.status === 'success').length"></div>
+        </div>
+        <div class="bg-white p-3 rounded-lg shadow-sm border-l-4 border-l-red-500">
+            <div class="text-xs text-gray-500">失败次数</div>
+            <div class="text-lg font-bold text-red-600" x-text="logs.filter(l => l.status === 'error').length"></div>
+        </div>
+        <div class="bg-white p-3 rounded-lg shadow-sm border-l-4 border-l-purple-500">
+            <div class="text-xs text-gray-500">总新增线索</div>
+            <div class="text-lg font-bold text-purple-600" x-text="logs.reduce((s, l) => s + (l.new_count || 0), 0)"></div>
+        </div>
+    </div>
+
+    <!-- 日志表格 -->
+    <div class="bg-white rounded-lg shadow overflow-hidden">
+        <table class="w-full text-sm">
+            <thead class="bg-gray-50">
+                <tr>
+                    <th class="px-4 py-3 text-left font-medium text-gray-600">时间</th>
+                    <th class="px-4 py-3 text-left font-medium text-gray-600">账号</th>
+                    <th class="px-4 py-3 text-left font-medium text-gray-600">状态</th>
+                    <th class="px-4 py-3 text-left font-medium text-gray-600">新增</th>
+                    <th class="px-4 py-3 text-left font-medium text-gray-600">解密</th>
+                    <th class="px-4 py-3 text-left font-medium text-gray-600">耗时</th>
+                    <th class="px-4 py-3 text-left font-medium text-gray-600">触发</th>
+                    <th class="px-4 py-3 text-left font-medium text-gray-600">消息</th>
+                </tr>
+            </thead>
+            <tbody>
+                <template x-for="l in logs" :key="l.id">
+                    <tr class="border-t hover:bg-gray-50">
+                        <td class="px-4 py-3 text-xs text-gray-500" x-text="l.created_at"></td>
+                        <td class="px-4 py-3 font-medium" x-text="l.account_name || l.account_id"></td>
+                        <td class="px-4 py-3">
+                            <span class="px-2 py-0.5 rounded text-xs"
+                                :class="l.status === 'success' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'"
+                                x-text="l.status === 'success' ? '成功' : '失败'"></span>
+                        </td>
+                        <td class="px-4 py-3 font-bold text-blue-600" x-text="l.new_count || 0"></td>
+                        <td class="px-4 py-3 text-purple-600" x-text="l.decrypt_count || 0"></td>
+                        <td class="px-4 py-3 text-xs text-gray-500" x-text="l.duration_ms ? l.duration_ms + 'ms' : '-'"></td>
+                        <td class="px-4 py-3">
+                            <span class="px-2 py-0.5 rounded text-xs"
+                                :class="l.triggered_by === 'manual' ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-600'"
+                                x-text="l.triggered_by === 'manual' ? '手动' : '自动'"></span>
+                        </td>
+                        <td class="px-4 py-3 text-xs text-gray-500 max-w-[200px] truncate" x-text="l.message || '-'" :title="l.message"></td>
+                    </tr>
+                </template>
+            </tbody>
+        </table>
+        <div x-show="logs.length === 0" class="text-center py-8 text-gray-400">暂无采集日志</div>
+    </div>
+
+    <!-- 分页 -->
+    <div class="flex items-center justify-between mt-4">
+        <div class="text-sm text-gray-500">
+            共 <span x-text="total"></span> 条记录
+        </div>
+        <div class="flex gap-2">
+            <button @click="page > 1 && (page--, load())" :disabled="page <= 1"
+                class="px-3 py-1 border rounded text-sm" :class="page <= 1 ? 'text-gray-300' : 'hover:bg-gray-50'">上一页</button>
+            <span class="px-3 py-1 text-sm" x-text="page + ' / ' + Math.ceil(total / size)"></span>
+            <button @click="page * size < total && (page++, load())" :disabled="page * size >= total"
+                class="px-3 py-1 border rounded text-sm" :class="page * size >= total ? 'text-gray-300' : 'hover:bg-gray-50'">下一页</button>
+        </div>
+    </div>
+</div>
+
+<script>
+function pollLogs() {
+    return {
+        logs: [],
+        total: 0,
+        page: 1,
+        size: 20,
+        schedulerPaused: false,
+        pushEnabled: true,
+        pushTimeRangeDays: 1,
+        pushSaved: false,
+        globalSaved: false,
+        teams: [],
+
+        async init() { await this.load(); await this.loadSchedulerStatus(); await this.loadPushConfig(); },
+
+        async load() {
+            const res = await fetch(`/admin/api/poll-logs?page=${this.page}&size=${this.size}`, {
+                headers: { 'Authorization': 'Bearer ' + localStorage.getItem('admin_token') }
+            });
+            const data = await res.json();
+            if (data.code === 0) {
+                this.logs = data.data.items || [];
+                this.total = data.data.total || 0;
+            }
+        },
+
+        async loadSchedulerStatus() {
+            const res = await fetch('/admin/api/scheduler/status', {
+                headers: { 'Authorization': 'Bearer ' + localStorage.getItem('admin_token') }
+            });
+            const data = await res.json();
+            if (data.code === 0) {
+                this.schedulerPaused = data.data.paused;
+            }
+        },
+
+        async toggleScheduler() {
+            const res = await fetch('/admin/api/scheduler/toggle', {
+                method: 'POST',
+                headers: { 'Authorization': 'Bearer ' + localStorage.getItem('admin_token') }
+            });
+            const data = await res.json();
+            if (data.code === 0) {
+                this.schedulerPaused = data.data.paused;
+                alert(data.message);
+            }
+        },
+
+        async loadPushConfig() {
+            const res = await fetch('/admin/api/push-config', {
+                headers: { 'Authorization': 'Bearer ' + localStorage.getItem('admin_token') }
+            });
+            const data = await res.json();
+            if (data.code === 0) {
+                this.pushEnabled = data.data.push_enabled;
+                this.pushTimeRangeDays = data.data.push_time_range_days;
+                this.teams = (data.data.teams || []).map(t => ({...t, _dirty: false, _saved: false}));
+            }
+        },
+
+        async saveGlobalConfig() {
+            const res = await fetch('/admin/api/push-config', {
+                method: 'PUT',
+                headers: { 'Authorization': 'Bearer ' + localStorage.getItem('admin_token'), 'Content-Type': 'application/json' },
+                body: JSON.stringify({ push_enabled: this.pushEnabled, push_time_range_days: this.pushTimeRangeDays })
+            });
+            const data = await res.json();
+            if (data.code === 0) {
+                this.globalSaved = true;
+                setTimeout(() => { this.globalSaved = false; }, 2000);
+            } else {
+                alert(data.message || '保存失败');
+            }
+        },
+
+        async saveTeamConfig(team) {
+            const res = await fetch('/admin/api/push-config', {
+                method: 'PUT',
+                headers: { 'Authorization': 'Bearer ' + localStorage.getItem('admin_token'), 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    teams: [{
+                        team_id: team.team_id,
+                        push_enabled: team.push_enabled,
+                        assign_mode: team.assign_mode,
+                        assignee_id: team.assign_mode === 'single' ? team.assignee_id : null
+                    }]
+                })
+            });
+            const data = await res.json();
+            if (data.code === 0) {
+                team._dirty = false;
+                team._saved = true;
+                setTimeout(() => { team._saved = false; }, 2000);
+            } else {
+                alert(data.message || '保存失败');
+            }
+        },
+
+        async togglePush() {
+            this.pushEnabled = !this.pushEnabled;
+            await this.saveGlobalConfig();
+        },
+
+        async assignHistory() {
+            if (!confirm('确认批量分配所有历史未分配线索？这将包括非当天的线索，并触发钉钉推送。')) return;
+            const res = await fetch('/admin/api/clue-configs/assign-history', {
+                method: 'POST',
+                headers: { 'Authorization': 'Bearer ' + localStorage.getItem('admin_token') }
+            });
+            const data = await res.json();
+            alert(data.message || '操作完成');
+        },
+
+        async pollNow() {
+            const res = await fetch('/admin/api/clue-configs/poll-now', {
+                method: 'POST',
+                headers: { 'Authorization': 'Bearer ' + localStorage.getItem('admin_token') }
+            });
+            const data = await res.json();
+            alert(data.message || '已触发');
+            setTimeout(() => this.load(), 3000);
+        }
+    }
+}
+</script>
+{% endblock %}

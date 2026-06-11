@@ -14,7 +14,7 @@ import json, os, shutil, io
 router = APIRouter()
 
 class LoginRequest(BaseModel): username: str; password: str
-class DealCreate(BaseModel): session_id: Optional[int]=None; lead_id: Optional[int]=None; customer_name: str; amount: float; deal_time: str; employee: Optional[str]=None; notes: Optional[str]=None
+class DealCreate(BaseModel): session_id: Optional[int]=None; lead_id: Optional[int]=None; customer_name: str; amount: float; deal_time: str; employee: Optional[str]=None; team_id: Optional[int]=None; employee_id: Optional[int]=None; notes: Optional[str]=None
 class ManualClueCreate(BaseModel):
     """手动添加私信线索请求模型"""
     name: Optional[str] = None
@@ -70,7 +70,7 @@ def update_settings(data: dict, admin=Depends(get_current_admin), db=Depends(get
 def list_deals(page: int = 1, size: int = 20, admin=Depends(get_current_admin), db=Depends(get_db)):
     query = db.query(Deal).order_by(Deal.created_at.desc())
     total = query.count(); items = query.offset((page-1)*size).limit(size).all()
-    return {"code":0, "data":{"items":[{"id":d.id,"customer_name":d.customer_name,"amount":d.amount,"deal_time":d.deal_time,"employee":d.employee,"lead_nickname":d.lead.nickname if d.lead else None,"lead_id":d.lead_id,"session_id":d.session_id} for d in items], "total":total}}
+    return {"code":0, "data":{"items":[{"id":d.id,"customer_name":d.customer_name,"amount":d.amount,"deal_time":d.deal_time,"employee":d.employee,"lead_nickname":d.lead.nickname if d.lead else None,"lead_id":d.lead_id,"session_id":d.session_id,"team_id":d.team_id,"team_name":d.team.name if d.team else None,"employee_id":d.employee_id,"employee_name":d.deal_employee.name if d.deal_employee else None} for d in items], "total":total}}
 
 @router.post("/deals")
 def create_deal(data: DealCreate, admin=Depends(get_current_admin), db=Depends(get_db)):
@@ -78,7 +78,10 @@ def create_deal(data: DealCreate, admin=Depends(get_current_admin), db=Depends(g
         lead = db.query(Lead).get(data.lead_id)
         if lead and lead.is_deal:
             return {"code": 400, "message": "该线索已标记成单"}
-    deal = Deal(**data.model_dump()); db.add(deal)
+    deal = Deal(session_id=data.session_id, lead_id=data.lead_id, customer_name=data.customer_name,
+                amount=data.amount, deal_time=data.deal_time, employee=data.employee,
+                team_id=data.team_id, employee_id=data.employee_id, notes=data.notes)
+    db.add(deal)
     if data.lead_id:
         lead = db.query(Lead).get(data.lead_id)
         if lead: lead.is_deal = True
@@ -177,11 +180,30 @@ def change_password(data: dict, admin=Depends(get_current_admin), db=Depends(get
 @router.get("/employee/stats")
 def employee_stats(date_from: str = None, date_to: str = None, admin=Depends(get_current_admin), db=Depends(get_db)):
     from sqlalchemy import func
-    query = db.query(Deal.employee, func.count(Deal.id).label('deal_count'), func.sum(Deal.amount).label('total_amount'))
+    # 按团队+员工维度统计成单
+    query = db.query(
+        Deal.team_id, Deal.employee_id,
+        RecruitTeam.name.label('team_name'),
+        RecruitEmployee.name.label('employee_name'),
+        func.count(Deal.id).label('deal_count'),
+        func.sum(Deal.amount).label('total_amount'),
+        func.avg(Deal.amount).label('avg_amount')
+    ).outerjoin(RecruitTeam, Deal.team_id == RecruitTeam.id
+    ).outerjoin(RecruitEmployee, Deal.employee_id == RecruitEmployee.id)
     if date_from: query = query.filter(Deal.deal_time >= date_from)
-    if date_to: query = query.filter(Deal.deal_time <= date_to)
-    results = query.group_by(Deal.employee).all()
-    return {"code":0, "data":[{"employee":r[0],"deal_count":r[1],"total_amount":float(r[2] or 0)} for r in results]}
+    if date_to: query = query.filter(Deal.deal_time <= date_to + " 23:59:59")
+    results = query.group_by(Deal.team_id, Deal.employee_id).all()
+    # 按团队汇总
+    team_map = {}
+    for r in results:
+        tid = r.team_id or 0
+        if tid not in team_map:
+            team_map[tid] = {"team_id": tid, "team_name": r.team_name or "未分配团队", "employees": [], "total_deals": 0, "total_amount": 0}
+        emp_data = {"employee_id": r.employee_id, "employee_name": r.employee_name or "未分配员工", "deal_count": r.deal_count, "total_amount": float(r.total_amount or 0), "avg_amount": round(float(r.avg_amount or 0), 2)}
+        team_map[tid]["employees"].append(emp_data)
+        team_map[tid]["total_deals"] += r.deal_count
+        team_map[tid]["total_amount"] += float(r.total_amount or 0)
+    return {"code":0, "data": list(team_map.values())}
 
 @router.get("/anchor-income-stats")
 def anchor_income_stats(date_from: str = None, date_to: str = None, anchor_id: int = None, admin=Depends(get_current_admin), db: DBSession = Depends(get_db)):
@@ -523,6 +545,28 @@ def list_leads(session_id: int = None, keyword: str = None, city: str = None, is
     total = query.count()
     items = query.offset((page-1)*size).limit(size).all()
     return {"code": 0, "data": {"items": [{"id": l.id, "session_id": l.session_id, "lead_time": l.lead_time, "nickname": l.nickname, "city": l.city, "path": l.path, "tags": l.tags, "is_valid": l.is_valid, "is_deal": l.is_deal, "source": l.source, "assigned_employee": l.assigned_employee, "ad_account": l.ad_account, "phone_masked": l.phone_masked, "product_name": l.product_name} for l in items], "total": total}}
+
+@router.get("/leads/{lead_id}/assignment")
+def get_lead_assignment(lead_id: int, admin=Depends(get_current_admin), db=Depends(get_db)):
+    """查询线索的分配团队/员工信息，用于成单时自动填充"""
+    lead = db.query(Lead).get(lead_id)
+    if not lead:
+        return {"code": 404, "message": "线索不存在"}
+    # 尝试通过手机号匹配ApiClue的分配记录
+    assignment = None
+    if lead.phone_masked:
+        api_clue = db.query(ApiClue).filter(ApiClue.phone_masked == lead.phone_masked).first()
+        if api_clue:
+            assignment = db.query(ClueAssignment).filter(ClueAssignment.clue_id == api_clue.id).first()
+    result = {"team_id": None, "team_name": None, "employee_id": None, "employee_name": None, "assigned_employee": lead.assigned_employee}
+    if assignment:
+        result["team_id"] = assignment.team_id
+        result["employee_id"] = assignment.employee_id
+        if assignment.team:
+            result["team_name"] = assignment.team.name
+        if assignment.employee:
+            result["employee_name"] = assignment.employee.name
+    return {"code": 0, "data": result}
 
 # ===== 排班方案 API =====
 
@@ -1148,36 +1192,66 @@ def toggle_scheduler(admin=Depends(get_current_admin), db: DBSession = Depends(g
 
 @router.get("/push-config")
 def get_push_config(admin=Depends(get_current_admin), db: DBSession = Depends(get_db)):
-    """获取推送配置"""
-    from models import ClueConfig
+    """获取推送配置（含团队级配置）"""
+    from models import ClueConfig, RecruitTeam, RecruitEmployee
     configs = db.query(ClueConfig).filter(ClueConfig.is_active == True).all()
-    # 取第一个活跃账号的配置作为全局配置
     if configs:
         c = configs[0]
-        return {"code": 0, "data": {
+        global_cfg = {
             "push_enabled": c.push_enabled if c.push_enabled is not None else True,
             "push_time_range_days": c.push_time_range_days or 1,
-        }}
-    return {"code": 0, "data": {"push_enabled": True, "push_time_range_days": 1}}
+        }
+    else:
+        global_cfg = {"push_enabled": True, "push_time_range_days": 1}
+
+    # 获取所有团队的推送配置
+    teams = db.query(RecruitTeam).order_by(RecruitTeam.id).all()
+    team_configs = []
+    for t in teams:
+        employees = db.query(RecruitEmployee).filter(
+            RecruitEmployee.team_id == t.id,
+            RecruitEmployee.is_active == True,
+        ).order_by(RecruitEmployee.sort_order, RecruitEmployee.id).all()
+        team_configs.append({
+            "team_id": t.id,
+            "team_name": t.name,
+            "push_enabled": t.push_enabled if t.push_enabled is not None else True,
+            "assign_mode": t.assign_mode or "round_robin",
+            "assignee_id": t.assignee_id,
+            "employees": [{"id": e.id, "name": e.name} for e in employees],
+        })
+
+    return {"code": 0, "data": {**global_cfg, "teams": team_configs}}
 
 
 @router.put("/push-config")
 def update_push_config(data: dict, admin=Depends(get_current_admin), db: DBSession = Depends(get_db)):
-    """更新推送配置（全局，应用到所有活跃账号）"""
-    from models import ClueConfig
+    """更新推送配置（全局 + 团队级）"""
+    from models import ClueConfig, RecruitTeam
+
     configs = db.query(ClueConfig).filter(ClueConfig.is_active == True).all()
-    if not configs:
-        return {"code": 404, "message": "无活跃的线索账号"}
-    push_enabled = data.get("push_enabled", True)
-    push_time_range_days = max(1, min(30, data.get("push_time_range_days", 1)))
-    for c in configs:
-        c.push_enabled = push_enabled
-        c.push_time_range_days = push_time_range_days
+    if "push_enabled" in data:
+        for c in configs:
+            c.push_enabled = data["push_enabled"]
+    if "push_time_range_days" in data:
+        for c in configs:
+            c.push_time_range_days = data["push_time_range_days"]
     db.commit()
-    return {"code": 0, "message": "推送配置已更新", "data": {
-        "push_enabled": push_enabled,
-        "push_time_range_days": push_time_range_days,
-    }}
+
+    teams_data = data.get("teams", [])
+    for td in teams_data:
+        team = db.query(RecruitTeam).get(td.get("team_id"))
+        if not team:
+            continue
+        if "push_enabled" in td:
+            team.push_enabled = td["push_enabled"]
+        if "assign_mode" in td:
+            team.assign_mode = td["assign_mode"]
+        if "assignee_id" in td:
+            team.assignee_id = td["assignee_id"]
+    db.commit()
+
+    return {"code": 0, "message": "推送配置已更新"}
 
 
 @router.get("/poll-logs")
