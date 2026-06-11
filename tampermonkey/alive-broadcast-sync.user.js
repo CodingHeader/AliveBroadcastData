@@ -1,13 +1,15 @@
 // ==UserScript==
 // @name         抖音直播数据同步
 // @namespace    alive-broadcast-data
-// @version      1.3.2
-// @description  自动采集抖音来客线索大屏数据并同步到服务端
-// @match        *://life.douyin.com/*
+// @version      1.5.0
+// @description  自动采集抖音来客线索大屏/评论洞察分析数据并同步到服务端
+// @match        *://life.douyin.com/p/liteapp/leads_analysis/live-screen*
+// @match        *://life.douyin.com/p/liteapp/leads_analysis/live-comment*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_notification
+// @grant        GM_registerMenuCommand
 // @connect      *
 // @grant        unsafeWindow
 // @run-at       document-idle
@@ -16,24 +18,56 @@
 (function() {
     'use strict';
 
+    // ========== 手动采集（控制台执行） ==========
+    // window.startCollection()
+    // 直播大屏采集: startCollection()
+    // 评论洞察采集: startCollection()
+    // ==========================================
+
+    // ========== 后台标签页伪装（防止SPA检测到后台跳过渲染）==========
+    try {
+        Object.defineProperty(document, 'hidden', { get: () => false, configurable: true });
+        Object.defineProperty(document, 'visibilityState', { get: () => 'visible', configurable: true });
+    } catch (e) { /* 某些环境不支持覆盖，忽略 */ }
+
     // ========== 配置区 ==========
     const CONFIG = {
-        SERVER_URL: 'http://YOUR_SERVER_IP:12306',
+        SERVER_URL: 'http://127.0.0.1:12306',
+        ACCOUNT_ID: GM_getValue('account_id', '') || '',  // 广告账户ID，在脚本菜单中设置
         CHECK_INTERVAL: 60 * 1000,
         COLLECT_HOUR: 1,       // 凌晨1点启动自动采集
         RETRY_COUNT: 3,
         RETRY_DELAY: 5000,
         PAGE_LOAD_TIMEOUT: 8000,   // 数据加载等待超时（原30s，实时数据页1s静默永远不成立）
-        TAB_SWITCH_DELAY: 500,
+        TAB_SWITCH_DELAY: 3000,    // Tab切换后等待数据加载（毫秒）
         MAX_DAILY_ATTEMPTS: 3,  // 每天自动采集最大尝试次数（含失败）
-        COLLECT_DAYS: 1,       // 采集天数: 1=昨天, 2=昨天+前天, 建议上限7
+        COLLECT_DAYS: 1,      // 采集天数: 1=昨天, 30=最近30天, 数字越大耗时越长
         NAVIGATION_TIMEOUT: 60000, // goToLatest/navigateToDate 绝对超时（毫秒）
         MAX_NAVIGATION_STEPS: 50,  // goToLatest 最大翻页步数（原500，最坏4.2h）
         HTTP_TIMEOUT: 15000,       // GM_xmlhttpRequest 统一超时（毫秒）
     };
 
+    // ========== 脚本菜单：设置直播告账户ID ==========
+    GM_registerMenuCommand('设置直播账户ID', () => {
+        const current = GM_getValue('account_id', '');
+        const val = prompt('请输入直播账户ID（对应后台"直播告账户"中的ID）：', current);
+        if (val !== null) {
+            GM_setValue('account_id', val.trim());
+            CONFIG.ACCOUNT_ID = val.trim();
+            alert('账户ID已设置为: ' + (val.trim() || '(空)'));
+        }
+    });
+
     // ========== 并发保护锁 ==========
     let isCollecting = false;
+
+    // ========== 页面类型检测 ==========
+    function getPageType() {
+        const href = location.href;
+        if (href.includes('/leads_analysis/live-comment')) return 'comment-insight';
+        if (href.includes('/leads_analysis/live-screen')) return 'live-screen';
+        return 'unknown';
+    }
 
     const SELECTORS = {
         prevButton: 'svg[data-log-name="上一场"]',
@@ -51,7 +85,7 @@
 
     // ========== 日志工具 ==========
     function log(msg, level = 'info') {
-        const prefix = `[直播同步 ${new Date().toLocaleTimeString()}]`;
+        const prefix = `[直播同步]`;
         console[level](`${prefix} ${msg}`);
     }
 
@@ -331,6 +365,25 @@
         });
     }
 
+    // ========== 等待SPA数据就绪（轮询关键DOM元素）==========
+    async function waitForPageReady(timeout = 60000) {
+        const deadline = Date.now() + timeout;
+        const checkInterval = 2000;
+        log(`等待页面数据就绪（超时${timeout / 1000}秒）...`);
+        while (Date.now() < deadline) {
+            const dataCard = document.querySelector('[data-log-name]');
+            const navBtn = document.querySelector(SELECTORS.prevButton) || document.querySelector(SELECTORS.nextButton);
+            if (dataCard && navBtn) {
+                log('页面数据已就绪');
+                await sleep(500);
+                return true;
+            }
+            await sleep(checkInterval);
+        }
+        log(`页面数据${timeout / 1000}秒内未就绪，放弃本次采集`, 'error');
+        return false;
+    }
+
     // ========== 防重复检查（批量拉取，主流程使用）==========
     function getExistingSessions(dateStr) {
         return new Promise((resolve) => {
@@ -530,22 +583,36 @@
         const tab = document.querySelector(SELECTORS.leadsAnalysisTab);
         if (tab) {
             tab.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-            await sleep(CONFIG.TAB_SWITCH_DELAY + 1000);
+            await sleep(CONFIG.TAB_SWITCH_DELAY);
         }
 
-        // 线索分析是标准table结构
-        const tables = document.querySelectorAll('table[role="table"]');
-        const bodyTable = tables[1] || tables[0];
+        // 轮询等待线索表格数据就绪（历史场次数据加载可能超过TAB_SWITCH_DELAY）
+        let tables = document.querySelectorAll('table[role="table"]');
+        let bodyTable = Array.from(tables).find(t => t.querySelectorAll('tbody tr[role="row"]').length > 0);
+        const waitDeadline = Date.now() + 12000;
+        while (!bodyTable && Date.now() < waitDeadline) {
+            await sleep(1000);
+            tables = document.querySelectorAll('table[role="table"]');
+            bodyTable = Array.from(tables).find(t => t.querySelectorAll('tbody tr[role="row"]').length > 0);
+        }
+        // 最终fallback：找任何有tbody行的table，或按索引取
+        if (!bodyTable) {
+            bodyTable = Array.from(tables).find(t => t.querySelectorAll('tbody tr').length > 0) || tables[1] || tables[0];
+        }
+        const headTable = Array.from(tables).find(t => t.querySelector('thead tr'));
         if (!bodyTable) {
             log('未找到线索表格，尝试Legacy方式', 'warn');
             return collectLeadsLegacy();
         }
 
-        // 找到可滚动容器（table可能被overflow容器包裹）
+        // 找到可滚动容器，验证包含预期行数（fallback到bodyTable本身）
         const scrollContainer = bodyTable.closest('[class*="scroll"], [class*="virtual"], [style*="overflow"]') || bodyTable.parentElement;
+        const containerRowCount = scrollContainer ? scrollContainer.querySelectorAll('tbody tr[role="row"]').length : 0;
+        const effectiveContainer = containerRowCount > 0 ? scrollContainer : bodyTable;
+        log(`线索表格: ${tables.length}个table, body行数=${bodyTable.querySelectorAll('tbody tr[role="row"]').length}, container行数=${containerRowCount}`);
 
-        // 动态列头映射：从表头读取列名，避免硬编码索引
-        const headerRow = bodyTable.querySelector('thead tr');
+        // 动态列头映射：从表头读取列名，避免硬编码索引（表头可能在另一个table中）
+        const headerRow = (headTable || bodyTable)?.querySelector('thead tr');
         const colMap = {};
         if (headerRow) {
             const headers = headerRow.querySelectorAll('th');
@@ -567,7 +634,7 @@
         }
 
         return scrollAndCollect({
-            container: scrollContainer,
+            container: effectiveContainer,
             rowSelector: 'tbody tr[role="row"]',
             parseFn: (row) => {
                 const cells = row.querySelectorAll('td');
@@ -622,7 +689,7 @@
         const commentTab = document.querySelector(SELECTORS.commentTab);
         if (commentTab) {
             commentTab.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-            await sleep(CONFIG.TAB_SWITCH_DELAY + 500);
+            await sleep(CONFIG.TAB_SWITCH_DELAY);
         }
 
         const BUTTON_LABELS = ['私信', '聊天', '私2', '咨询', '立即咨询'];
@@ -716,7 +783,7 @@
         const tab = document.querySelector(SELECTORS.highIntentTab);
         if (tab) {
             tab.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-            await sleep(CONFIG.TAB_SWITCH_DELAY + 800);
+            await sleep(CONFIG.TAB_SWITCH_DELAY);
         }
         
         // 策略1: 从Tab内容面板区域搜索列表容器
@@ -817,16 +884,19 @@
             return {};
         }
         tab.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-        await sleep(CONFIG.TAB_SWITCH_DELAY + 1500);
+        await sleep(CONFIG.TAB_SWITCH_DELAY);
 
         const review = {};
 
-        // 策略1: table结构采集
-        const tables = document.querySelectorAll('table[role="table"]');
-        const reviewTable = tables[0]; // 复盘表通常是第一个table
-        if (reviewTable) {
-            const headerRow = reviewTable.querySelector('thead tr');
-            const bodyRows = reviewTable.querySelectorAll('tbody tr');
+        // 策略1: table结构采集（抖音来客使用分离表头模式：thead在第一个table，tbody在第二个table）
+        const tabPanel = tab.closest('.leads-tab')?.querySelector('.leads-tab-item-active, .leads-tab-item') || document;
+        const tables = tabPanel.querySelectorAll('table[role="table"]');
+        // 分离表头模式：从有thead的table取表头，从有tbody的table取数据行
+        const headTable = Array.from(tables).find(t => t.querySelector('thead tr'));
+        const bodyTable = Array.from(tables).find(t => t.querySelectorAll('tbody tr').length > 0);
+        if (headTable || bodyTable) {
+            const headerRow = (headTable || bodyTable)?.querySelector('thead tr');
+            const bodyRows = (bodyTable || headTable)?.querySelectorAll('tbody tr') || [];
             if (headerRow && bodyRows.length > 0) {
                 const headers = Array.from(headerRow.querySelectorAll('th')).map(th => th.textContent.trim());
                 for (const row of bodyRows) {
@@ -901,10 +971,11 @@
         const tab = document.querySelector('[data-log-name="私信分析"]');
         if (!tab) { log('未找到私信分析Tab'); return []; }
         tab.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-        await sleep(CONFIG.TAB_SWITCH_DELAY + 1000);
+        await sleep(CONFIG.TAB_SWITCH_DELAY);
 
+        // 私信分析使用分离表头模式：thead在tables[0]，tbody在tables[1]
         const tables = document.querySelectorAll('table[role="table"]');
-        const bodyTable = tables[1] || tables[0];
+        const bodyTable = Array.from(tables).find(t => t.querySelectorAll('tbody tr').length > 0) || tables[1] || tables[0];
         if (!bodyTable) { log('未找到私信分析表格'); return []; }
 
         const scrollContainer = bodyTable.closest('[class*="scroll"], [class*="virtual"], [style*="overflow"]') || bodyTable.parentElement;
@@ -937,6 +1008,12 @@
     // ========== 数据完整性自检 ==========
     function validateMetrics(metrics) {
         const totalFields = Object.keys(metrics).length;
+        if (totalFields === 0) {
+            const existingCards = document.querySelectorAll('[data-log-name]');
+            const cardNames = Array.from(existingCards).map(el => el.getAttribute('data-log-name')).slice(0, 15);
+            log(`未采集到任何指标字段，页面可能未就绪。当前页面data-log-name: [${cardNames.join(', ')}]（共${existingCards.length}个）`, 'error');
+            return false;
+        }
         let emptyCount = 0;
         const emptyFields = [];
         for (const [key, value] of Object.entries(metrics)) {
@@ -1092,6 +1169,9 @@
     // ========== 采集当前场次 ==========
     async function collectCurrentSession(timeInfo) {
         log(`采集场次: ${timeInfo.start}`);
+        // 等待数据卡片渲染完成（锚点/翻页后卡片可能延迟加载，尤其后台标签页）
+        try { await waitForDataLoad(); } catch {}
+        await waitForOdometer();
         const metrics = await collectMetrics();
 
         // 数据完整性自检
@@ -1122,10 +1202,289 @@
 
         return {
             version: "1.0",
+            account_id: CONFIG.ACCOUNT_ID || null,
             start_time: timeInfo.start,
             end_time: timeInfo.end,
             metrics, review, leads, comments, high_intent_users: highIntentUsers, private_messages: privateMessages
         };
+    }
+
+    // ========== 评论洞察分析页面 - 定位"评论明细"区域 ==========
+    function findCommentDetailSection() {
+        // 从"评论明细"文本向上找高度>500的容器
+        const detailText = [...document.querySelectorAll('*')].find(e =>
+            e.textContent?.trim() === '评论明细' && e.children.length === 0
+        );
+        if (!detailText) return null;
+        let section = detailText;
+        for (let i = 0; i < 10; i++) {
+            section = section.parentElement;
+            if (!section) break;
+            if (section.getBoundingClientRect().height > 500) return section;
+        }
+        return null;
+    }
+
+    // ========== 评论洞察分析页面 - 滚动采集"全部"tab下的所有评论 ==========
+    async function collectCommentInsightScroll(section) {
+        const scrollEl = section.querySelector('[class*="overflow-auto"]') || section.querySelector('[style*="overflow"]');
+        if (!scrollEl) {
+            log('未找到评论洞察滚动容器', 'error');
+            return [];
+        }
+
+        const collected = new Map(); // key=昵称|评论时间|内容前30字 → 数据对象
+        const ROW_HEIGHT = 60;
+        const totalRows = Math.round(scrollEl.scrollHeight / ROW_HEIGHT);
+        log(`评论洞察虚拟列表: scrollH=${scrollEl.scrollHeight}, 预计${totalRows}行`);
+
+        function collectVisible() {
+            const rows = section.querySelectorAll('[style*="translateY"]');
+            let newCount = 0;
+            rows.forEach(row => {
+                const cols = row.querySelectorAll(':scope > div');
+                if (cols.length < 4) return;
+
+                // 验证列宽匹配评论级格式: [160,120,600,150,160] 5列
+                // 或用户级格式: [160,120,400,100,150,160] 6列
+                const widths = [...cols].map(c => parseInt(c.style.width) || 0);
+
+                // 昵称 (第1列, 160px)
+                const nickname = cols[0]?.textContent.trim().split('\n')[0];
+                // 是否留资 (第2列, 120px)
+                const leadText = cols[1]?.textContent.trim();
+                const hasLead = leadText.includes('已留资');
+                // 评论内容 (第3列, 600px or 400px)
+                const content = cols[2]?.textContent.trim();
+
+                let commentTime = '';
+                if (widths.length === 5) {
+                    // 评论级5列: 昵称(160)|是否留资(120)|评论内容(600)|评论时间(150)|操作(160)
+                    commentTime = cols[3]?.textContent.trim();
+                } else if (widths.length >= 6) {
+                    // 用户级6列: 昵称(160)|是否留资(120)|最新评论内容(400)|评论次数(100)|最新评论时间(150)|操作(160)
+                    commentTime = cols[4]?.textContent.trim();
+                }
+
+                if (!nickname || !content) return;
+
+                const key = `${nickname}|${commentTime}|${content.slice(0, 30)}`;
+                if (!collected.has(key)) {
+                    collected.set(key, { nickname, has_lead: hasLead, content: content.slice(0, 500), comment_time: commentTime });
+                    newCount++;
+                }
+            });
+            return newCount;
+        }
+
+        // 逐步滚动采集
+        scrollEl.scrollTop = 0;
+        await sleep(300);
+
+        const step = 200; // 每次滚200px，确保不遗漏
+        const maxScroll = scrollEl.scrollHeight - scrollEl.clientHeight;
+        let scrollPos = 0;
+        let maxRounds = Math.ceil(maxScroll / step) + 5;
+
+        for (let round = 0; round < maxRounds; round++) {
+            collectVisible();
+            scrollPos += step;
+            if (scrollPos >= maxScroll) {
+                scrollEl.scrollTop = maxScroll;
+                await sleep(300);
+                collectVisible();
+                break;
+            }
+            scrollEl.scrollTop = scrollPos;
+            await sleep(150);
+        }
+
+        // 回到顶部
+        try { scrollEl.scrollTop = 0; } catch {}
+
+        const results = [...collected.values()];
+        log(`评论洞察滚动采集完成: ${results.length}条评论`);
+        return results;
+    }
+
+    // ========== 评论洞察分析采集（重构版）==========
+    async function collectCommentInsight() {
+        log('开始采集评论洞察分析数据...');
+
+        // 1. 提取当前场次信息
+        const timeInfo = parseSessionTime(getTimeRangeText(), getLocalDateStr(new Date()));
+        const roomId = new URLSearchParams(location.search).get('room_id') || '';
+
+        // 2. 提取汇总信息 (textarea.leads-ls-screen-text)
+        let summary = '';
+        const summaryEl = document.querySelector('textarea.leads-ls-screen-text');
+        if (summaryEl) {
+            summary = summaryEl.value || summaryEl.textContent || '';
+            log(`汇总: ${summary}`);
+        }
+
+        // 3. 点击"全部"tab切换到全部评论视图
+        const allTab = [...document.querySelectorAll('[data-log-name="全部"]')].find(e =>
+            e.classList.contains('leads-ls-screen-radio-tag') || e.closest('.leads-ls-screen-radio-tag')
+        );
+        if (allTab) {
+            log('点击"全部"tab...');
+            allTab.click();
+            await sleep(1500); // 等待数据加载
+        } else {
+            log('未找到"全部"tab，使用当前视图采集', 'warn');
+        }
+
+        // 4. 定位"评论明细"区域
+        const section = findCommentDetailSection();
+        if (!section) {
+            log('未找到评论明细区域', 'error');
+            return { room_id: roomId, session_start: timeInfo.start, session_end: timeInfo.end, summary, comments: [], anchor_stats: [] };
+        }
+
+        // 5. 滚动采集所有评论
+        const comments = await collectCommentInsightScroll(section);
+
+        if (comments.length === 0) {
+            log('滚动采集到0条评论，尝试fallback: 直接读取当前可见行', 'warn');
+            // fallback: 不切换tab直接采集当前可见行
+            const rows = document.querySelectorAll('[style*="translateY"]');
+            for (const row of rows) {
+                const cols = row.querySelectorAll(':scope > div');
+                if (cols.length < 4) continue;
+                const nickname = cols[0]?.textContent.trim().split('\n')[0];
+                const hasLead = cols[1]?.textContent.trim().includes('已留资');
+                const content = cols[2]?.textContent.trim();
+                const time = cols[3]?.textContent.trim();
+                if (nickname && content) {
+                    comments.push({ nickname, has_lead: hasLead, content: content.slice(0, 500), comment_time: time });
+                }
+            }
+            log(`fallback采集: ${comments.length}条`);
+        }
+
+        // 6. 从后端获取主播时段信息用于分组统计
+        const anchorSlots = [];
+        if (timeInfo.start) {
+            try {
+                const sessionDate = timeInfo.start.slice(0, 10);
+                const resp = await new Promise((resolve, reject) => {
+                    GM_xmlhttpRequest({
+                        method: 'GET',
+                        url: `${CONFIG.SERVER_URL}/api/anchors/by-date?date=${sessionDate}`,
+                        timeout: CONFIG.HTTP_TIMEOUT,
+                        onload: (r) => { try { resolve(JSON.parse(r.responseText)); } catch { resolve({ code: -1 }); } },
+                        onerror: () => reject(new Error('获取主播信息失败')),
+                        ontimeout: () => reject(new Error('获取主播信息超时'))
+                    });
+                });
+                if (resp.code === 0 && resp.data) {
+                    anchorSlots.push(...resp.data);
+                }
+            } catch (e) {
+                log(`获取主播时段信息失败: ${e.message}`, 'warn');
+            }
+        }
+
+        // 7. 按主播时段分组统计评论
+        const anchorStats = [];
+        for (const slot of anchorSlots) {
+            const slotComments = comments.filter(c => {
+                if (!c.comment_time || !slot.on_time || !slot.off_time) return false;
+                // comment_time格式: MM-DD HH:mm, 需要拼接日期部分
+                const commentHourMin = c.comment_time.replace(/^\d{2}-\d{2}\s*/, ''); // 提取HH:mm部分
+                const onHourMin = slot.on_time.length > 5 ? slot.on_time.slice(11, 16) : slot.on_time;
+                const offHourMin = slot.off_time.length > 5 ? slot.off_time.slice(11, 16) : slot.off_time;
+                return commentHourMin >= onHourMin && commentHourMin <= offHourMin;
+            });
+            anchorStats.push({
+                anchor_name: slot.name,
+                on_time: slot.on_time,
+                off_time: slot.off_time,
+                comment_count: slotComments.length,
+                lead_count: slotComments.filter(c => c.has_lead).length
+            });
+        }
+
+        // 8. 统计汇总
+        const uniqueUsers = new Set(comments.map(c => c.nickname));
+        const leadUsers = new Set(comments.filter(c => c.has_lead).map(c => c.nickname));
+        log(`评论洞察统计: ${comments.length}条评论, ${uniqueUsers.size}个用户, ${leadUsers.size}人已留资`);
+
+        return {
+            room_id: roomId,
+            session_start: timeInfo.start,
+            session_end: timeInfo.end,
+            summary,
+            anchor_stats: anchorStats,
+            comments
+        };
+    }
+
+    async function collectCommentInsightCollection(isAuto = true) {
+        if (isCollecting) {
+            log('采集进行中，跳过本次调用');
+            return;
+        }
+        isCollecting = true;
+        try {
+            log(`开始评论洞察分析采集 (${isAuto ? '自动' : '手动'})`);
+            
+            // 等待页面加载
+            try { await waitForDataLoad(); } catch {}
+            await sleep(2000);
+            
+            // 采集数据
+            const data = await collectCommentInsight();
+            
+            if (!data || data.comments.length === 0) {
+                log('未采集到评论数据', 'warn');
+                GM_notification({ title: '⚠️ 采集完成', text: '未采集到评论数据' });
+                return;
+            }
+            
+            // 发送到服务端
+            try {
+                const result = await new Promise((resolve, reject) => {
+                    GM_xmlhttpRequest({
+                        method: 'POST',
+                        url: `${CONFIG.SERVER_URL}/api/comment-insight`,
+                        headers: { 'Content-Type': 'application/json' },
+                        data: JSON.stringify(data),
+                        timeout: CONFIG.HTTP_TIMEOUT,
+                        onload: (r) => resolve(JSON.parse(r.responseText)),
+                        onerror: () => reject(new Error('发送失败')),
+                        ontimeout: () => reject(new Error('发送超时'))
+                    });
+                });
+                
+                if (result.code === 0) {
+                    log(`评论洞察分析采集完成: ${data.comments.length}条评论, ${data.anchor_stats.length}个主播时段`);
+                    GM_notification({ 
+                        title: '✅ 采集完成', 
+                        text: `评论${data.comments.length}条, 主播时段${data.anchor_stats.length}个` 
+                    });
+                } else {
+                    log(`发送失败: ${result.message}`, 'error');
+                    GM_notification({ title: '❌ 采集失败', text: result.message || '发送到服务端失败' });
+                }
+            } catch (e) {
+                log(`发送失败: ${e.message}`, 'error');
+                // 缓存到本地
+                const cache = JSON.parse(GM_getValue('pending_comment_insight', '[]'));
+                if (cache.length < 10) {
+                    cache.push(data);
+                    GM_setValue('pending_comment_insight', JSON.stringify(cache));
+                    log('数据已缓存到本地', 'warn');
+                }
+                GM_notification({ title: '❌ 采集失败', text: e.message.slice(0, 100) });
+            }
+        } catch (e) {
+            log(`采集崩溃: ${e.message}`, 'error');
+            GM_notification({ title: '❌ 采集崩溃', text: e.message.slice(0, 100) });
+        } finally {
+            isCollecting = false;
+        }
     }
 
     // ========== 定位到最晚场次（锚点） ==========
@@ -1289,7 +1648,7 @@
             // 新场次：采集+发送+校验
             try {
                 const data = await collectCurrentSession(timeInfo);
-                if (data) {
+                if (data && data.metrics && Object.values(data.metrics).some(v => v && v !== '--')) {
                     const result = await sendToServer(data);
                     if (result.code === 0) {
                         collected++;
@@ -1301,6 +1660,9 @@
                         failed++;
                         log(`发送失败: ${result.message}`, 'error');
                     }
+                } else if (data) {
+                    log(`指标全为空值，拒绝发送: ${timeInfo.start}`, 'warn');
+                    failed++;
                 } else {
                     failed++;
                 }
@@ -1346,10 +1708,15 @@
             }
         }
 
-        GM_setValue('last_collect_date', collectDay);
+        if (collected > 0) {
+            GM_setValue('last_collect_date', collectDay);
+        }
         log(`采集完成: 新增${collected}场, 跳过${skipped}场${failed > 0 ? `, 失败${failed}场` : ''}`);
-        GM_notification({ title: '直播数据同步', text: `采集完成: 新增${collected}场` });
-        if (failed > 0) {
+        GM_notification({ title: '直播数据同步', text: `采集完成: 新增${collected}场${failed > 0 ? `，失败${failed}场` : ''}` });
+        if (failed > 0 && collected === 0) {
+            log('全部场次采集失败，心跳将在下个周期重试', 'warn');
+            sendAlert('采集失败', `${CONFIG.COLLECT_DAYS}天采集全部失败（${failed}场），等待心跳重试`);
+        } else if (failed > 0) {
             sendAlert('采集失败', `${CONFIG.COLLECT_DAYS}天采集完成：新增${collected}场，跳过${skipped}场，失败${failed}场`);
         }
         } finally {
@@ -1375,10 +1742,13 @@
                 GM_setValue('pending_collect', 'true');
                 location.reload();
             } else if (todayAttempts >= CONFIG.MAX_DAILY_ATTEMPTS) {
-                log(`今日已达最大尝试次数(${CONFIG.MAX_DAILY_ATTEMPTS})，停止心跳检测`);
-                clearInterval(heartbeatTimer);
+                // 不clearInterval：明天日期变更后 todayAttempts 自动归零，心跳将重新触发采集
+                // （仅在采集时间窗口内打印，避免白天刷新时日志刷屏）
+                if (now.getHours() >= CONFIG.COLLECT_HOUR && now.getHours() < CONFIG.COLLECT_HOUR + 6) {
+                    log(`今日已达最大尝试次数(${CONFIG.MAX_DAILY_ATTEMPTS})，等待明天0点重试`);
+                }
             }
-            // lastCollect === today 时仅跳过不clearInterval，保持心跳运行以便次日自动触发
+            // lastCollect === today 或 todayAttempts>=MAX 时均不clearInterval，保持心跳运行以便次日自动触发
         }, CONFIG.CHECK_INTERVAL);
     }
 
@@ -1407,26 +1777,52 @@
     });
 
     // ========== 主入口 ==========
-    log('脚本已加载');
+    log('脚本已加载 v1.5.0');
+    
+    // 页面类型检测：非目标页面不执行
+    const pageType = getPageType();
+    if (pageType === 'unknown') {
+        log('非目标页面（live-screen/live-comment），脚本不执行');
+        return;
+    }
+    log(`当前页面类型: ${pageType}`);
+    
     const pending = GM_getValue('pending_collect', 'false');
     if (pending === 'true') {
         GM_setValue('pending_collect', 'false');
-        log('页面已刷新，3秒后开始采集');
+        log('页面已刷新，等待数据加载后开始采集...');
         setTimeout(async () => {
+            const ready = await waitForPageReady(60000);
+            if (!ready) {
+                log('页面未就绪，本次采集放弃，等待心跳下次重试', 'warn');
+                GM_notification({ title: '⚠️ 采集延迟', text: '页面数据60秒未加载，等待下次重试' });
+                if (pageType === 'live-screen') startHeartbeat();
+                return;
+            }
             try {
-                await startCollection(true);
+                if (pageType === 'comment-insight') {
+                    await collectCommentInsightCollection(true);
+                } else {
+                    await startCollection(true);
+                }
             } catch (e) {
                 log(`采集崩溃: ${e.message}\n${e.stack}`, 'error');
                 GM_notification({ title: '❌ 采集崩溃', text: e.message.slice(0, 100) });
                 sendAlert('脚本崩溃', e.message + '\n' + (e.stack || '').slice(0, 200), '', 'critical');
             }
             // P0修复：pending路径采集完成后必须重启heartbeat，否则Day2+无自动采集
-            startHeartbeat();
+            if (pageType === 'live-screen') startHeartbeat();
         }, 3000);
     } else {
-        startHeartbeat();
+        if (pageType === 'live-screen') startHeartbeat();
     }
 
     // 暴露给控制台手动触发
-    unsafeWindow.startCollection = () => startCollection(false);
+    unsafeWindow.startCollection = () => {
+        if (pageType === 'comment-insight') {
+            return collectCommentInsightCollection(false);
+        } else {
+            return startCollection(false);
+        }
+    };
 })();

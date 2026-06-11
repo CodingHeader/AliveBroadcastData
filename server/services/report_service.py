@@ -41,7 +41,7 @@ def generate_daily_report(db: DBSession, date: str) -> int:
         md += "\n---\n"
     existing = db.query(Report).filter(Report.report_type=="daily", Report.period==date).first()
     if existing: existing.content = md; existing.generated_at = datetime.now().isoformat(); db.commit(); return existing.id
-    r = Report(report_type="daily", period=date, content=md); db.add(r); db.commit(); return r.id
+    r = Report(report_type="daily", period=date, content=md, generated_at=datetime.now().isoformat()); db.add(r); db.commit(); return r.id
 
 def generate_weekly_report(db: DBSession, week_str: str = None) -> int:
     today = datetime.now()
@@ -105,7 +105,7 @@ def generate_weekly_report(db: DBSession, week_str: str = None) -> int:
     
     existing = db.query(Report).filter(Report.report_type=="weekly", Report.period==week_str).first()
     if existing: existing.content = md; existing.generated_at = datetime.now().isoformat(); db.commit(); return existing.id
-    r = Report(report_type="weekly", period=week_str, content=md); db.add(r); db.commit(); return r.id
+    r = Report(report_type="weekly", period=week_str, content=md, generated_at=datetime.now().isoformat()); db.add(r); db.commit(); return r.id
 
 def generate_monthly_report(db: DBSession, month_str: str = None) -> int:
     if not month_str:
@@ -229,4 +229,4 @@ def generate_monthly_report(db: DBSession, month_str: str = None) -> int:
     
     existing = db.query(Report).filter(Report.report_type=="monthly", Report.period==month_str).first()
     if existing: existing.content = md; existing.generated_at = datetime.now().isoformat(); db.commit(); return existing.id
-    r = Report(report_type="monthly", period=month_str, content=md); db.add(r); db.commit(); return r.id
+    r = Report(report_type="monthly", period=month_str, content=md, generated_at=datetime.now().isoformat()); db.add(r); db.commit(); return r.id

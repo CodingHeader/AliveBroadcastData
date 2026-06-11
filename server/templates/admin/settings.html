@@ -18,10 +18,61 @@
             <div>最近同步: <span x-text="stats.last_sync||'-'"></span></div>
         </div>
     </div>
+    <div class="bg-white rounded-lg shadow-sm p-4 space-y-4">
+        <h3 class="font-bold">数据库备份与恢复</h3>
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <button @click="downloadBackup()" class="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 text-sm">下载完整备份(.db)</button>
+            <button @click="exportJSON()" class="px-4 py-2 bg-green-500 text-white rounded hover:bg-green-600 text-sm">导出JSON数据</button>
+            <div>
+                <label class="px-4 py-2 bg-orange-500 text-white rounded hover:bg-orange-600 text-sm cursor-pointer inline-block">
+                    上传恢复数据库
+                    <input type="file" accept=".db" @change="uploadRestore($event)" class="hidden">
+                </label>
+            </div>
+        </div>
+        <div x-show="dbMsg" class="text-sm" :class="dbMsgType==='error'?'text-red-500':'text-green-500'" x-text="dbMsg"></div>
+        <!-- 自动备份列表 -->
+        <div x-show="backups.length > 0" class="mt-4">
+            <h4 class="font-medium text-sm mb-2">自动备份记录</h4>
+            <table class="data-table text-sm">
+                <thead><tr><th>文件名</th><th>大小</th><th>时间</th><th>操作</th></tr></thead>
+                <tbody>
+                    <template x-for="b in backups" :key="b.name">
+                        <tr>
+                            <td x-text="b.name"></td>
+                            <td x-text="b.size_kb + ' KB'"></td>
+                            <td x-text="b.modified"></td>
+                            <td><a :href="'/admin/api/db/backups/' + b.name" class="text-blue-500 hover:text-blue-700 text-xs">下载</a></td>
+                        </tr>
+                    </template>
+                </tbody>
+            </table>
+        </div>
+    </div>
 </div>
 <script>
-function settingsApp() { return { oldPwd: '', newPwd: '', pwdMsg: '', stats: {},
-    async loadData() { const r = await adminFetch('/admin/api/settings'); const j = await r.json(); const d = j.data || {}; this.stats = {sessions: d.session_count||0, leads: d.lead_count||0, last_sync: d.last_sync||'-'}; },
+function settingsApp() { return { oldPwd: '', newPwd: '', pwdMsg: '', stats: {}, backups: [], dbMsg: '', dbMsgType: 'success',
+    async loadData() {
+        const r = await adminFetch('/admin/api/settings'); const j = await r.json(); const d = j.data || {};
+        this.stats = {sessions: d.session_count||0, leads: d.lead_count||0, last_sync: d.last_sync||'-'};
+        this.loadBackups();
+    },
+    async loadBackups() {
+        try { const r = await adminFetch('/admin/api/db/backups'); const j = await r.json(); this.backups = j.data || []; } catch(e) {}
+    },
+    downloadBackup() { window.open('/admin/api/db/backup', '_blank'); },
+    exportJSON() { window.open('/admin/api/db/export-json', '_blank'); },
+    async uploadRestore(event) {
+        const file = event.target.files[0]; if(!file) return;
+        if(!confirm('确认恢复数据库？当前数据将被替换（恢复前会自动备份）')) return;
+        const formData = new FormData(); formData.append('file', file);
+        try {
+            const r = await fetch('/admin/api/db/upload-restore', {method:'POST', headers:{'Authorization':'Bearer '+localStorage.getItem('admin_token')}, body:formData});
+            const j = await r.json();
+            if(j.code===0) { this.dbMsg='恢复成功！'+j.message; this.dbMsgType='success'; }
+            else { this.dbMsg=j.message||'恢复失败'; this.dbMsgType='error'; }
+        } catch(e) { this.dbMsg='上传失败: '+e.message; this.dbMsgType='error'; }
+    },
     async changePwd() { if(!this.oldPwd||!this.newPwd) { this.pwdMsg='请填写完整'; return; } const r = await adminFetch('/admin/api/settings/password', {method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({old_password:this.oldPwd,new_password:this.newPwd})}); const j = await r.json(); this.pwdMsg = j.message || '修改成功'; }
 }; }
 </script>

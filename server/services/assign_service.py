@@ -66,7 +66,7 @@ def get_next_employee(team_id: int, db) -> Optional[int]:
 
 def fill_anchor_names(clue, db):
     """填充线索的主播名（根据anchor_id或create_time匹配排班）"""
-    from models import Anchor, SessionAnchor, Session, ScheduleBinding, ScheduleSlot
+    from models import Anchor
 
     if clue.anchor_names:
         return  # 已有主播名
@@ -78,58 +78,18 @@ def fill_anchor_names(clue, db):
             clue.anchor_names = anchor.name
             return
 
-    # 通过create_time匹配排班
+    # 通过match_anchor匹配（支持多主播）
     if not clue.create_time_detail:
         return
 
     try:
-        clue_dt = datetime.strptime(clue.create_time_detail[:16], "%Y-%m-%d %H:%M")
-    except (ValueError, TypeError):
-        return
-
-    clue_date = clue.create_time_detail[:10]
-    clue_minutes = clue_dt.hour * 60 + clue_dt.minute
-
-    # 查找当天的排班绑定
-    binding = db.query(ScheduleBinding).filter(ScheduleBinding.date == clue_date).first()
-    if not binding:
-        return
-
-    # 查找匹配的时段
-    slots = db.query(ScheduleSlot).filter(ScheduleSlot.plan_id == binding.plan_id).all()
-    anchor_mapping = {}
-    if binding.anchor_mapping:
-        import json
-        try:
-            anchor_mapping = json.loads(binding.anchor_mapping)
-        except Exception:
-            pass
-
-    for slot in slots:
-        # 解析时段
-        time_parts = slot.time_slot.split("-")
-        if len(time_parts) != 2:
-            continue
-        try:
-            start_min = _parse_time_minutes(time_parts[0].strip())
-            end_min = _parse_time_minutes(time_parts[1].strip())
-        except Exception:
-            continue
-
-        if start_min <= clue_minutes < end_min:
-            # 找到匹配时段，查找主播
-            anchor_ids = []
-            if str(slot.id) in anchor_mapping:
-                mapped = anchor_mapping[str(slot.id)]
-                if isinstance(mapped, list):
-                    anchor_ids = [int(a) for a in mapped if a]
-                elif isinstance(mapped, int):
-                    anchor_ids = [mapped]
-
-            if anchor_ids:
-                anchors = db.query(Anchor).filter(Anchor.id.in_(anchor_ids)).all()
-                clue.anchor_names = ",".join([a.name for a in anchors])
-            return
+        from services.clue_service import match_anchor
+        anchor_ids = match_anchor(clue.create_time_detail, db)
+        if anchor_ids:
+            anchor_objs = db.query(Anchor).filter(Anchor.id.in_(anchor_ids)).all()
+            clue.anchor_names = ",".join([a.name for a in anchor_objs])
+    except Exception:
+        pass
 
 
 def _parse_time_minutes(time_str: str) -> int:

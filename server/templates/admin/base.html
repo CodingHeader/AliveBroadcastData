@@ -78,6 +78,8 @@ function sidebarApp() {
                             oldScript.replaceWith(newScript);
                         });
                         if (typeof Alpine !== 'undefined') {
+                            // 让 Alpine MutationObserver 先完成旧组件清理，避免 initTree 跳过新组件
+                            await new Promise(resolve => setTimeout(resolve, 0));
                             Alpine.initTree(adminMain);
                         }
                     }

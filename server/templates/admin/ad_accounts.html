@@ -3,12 +3,7 @@
 <div x-data="adAccountsApp()" x-init="loadData()" class="space-y-4">
     <div class="flex justify-between items-center">
         <h2 class="text-xl font-bold">直播账户管理</h2>
-        <div class="flex space-x-2 flex-wrap gap-y-2">
-            <input x-model="newName" placeholder="账户名称" class="form-input max-w-xs">
-            <input x-model="newMerchantId" placeholder="抖音来客商家ID" class="form-input max-w-xs">
-            <input x-model="newNotes" placeholder="备注" class="form-input max-w-xs">
-            <button @click="addAccount()" class="btn-primary">新增</button>
-        </div>
+        <button @click="openCreate()" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 text-sm">+ 新增账户</button>
     </div>
     <div class="bg-white rounded-lg shadow-sm overflow-x-auto">
         <table class="data-table">
@@ -42,10 +37,41 @@
                 </template>
             </tbody>
         </table>
+        <div x-show="accounts.length===0 && _loaded" class="text-center py-8 text-gray-400">暂无直播账户，点击右上角新增</div>
+    </div>
+
+    <!-- 新增弹窗 -->
+    <div x-show="showModal" x-transition.opacity class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" @click.self="showModal=false" x-cloak>
+        <div class="bg-white p-6 rounded-lg shadow-xl w-[480px] space-y-4">
+            <h3 class="font-bold text-lg">新增直播账户</h3>
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">账户名称</label>
+                <input x-model="form.account_name" class="form-input w-full" placeholder="如：主账号">
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">抖音来客商家ID</label>
+                <input x-model="form.merchant_id" class="form-input w-full font-mono" placeholder="商家ID">
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">备注</label>
+                <input x-model="form.notes" class="form-input w-full" placeholder="备注信息">
+            </div>
+            <div class="flex gap-2 pt-2">
+                <button @click="addAccount()" class="btn-primary">保存</button>
+                <button @click="showModal=false" class="bg-gray-200 px-4 py-2 rounded hover:bg-gray-300 text-sm">取消</button>
+            </div>
+        </div>
     </div>
 </div>
 <script>
-function adAccountsApp() { return { accounts: [], newName: '', newMerchantId: '', newNotes: '', _loaded: false,
+function adAccountsApp() { return { accounts: [], showModal: false, _loaded: false,
+    form: { account_name: '', merchant_id: '', notes: '' },
+    openCreate() {
+        this.form.account_name = '';
+        this.form.merchant_id = '';
+        this.form.notes = '';
+        this.showModal = true;
+    },
     async loadData() {
         try {
             const r = await adminFetch('/admin/api/ad-accounts'); const j = await r.json();
@@ -56,11 +82,11 @@ function adAccountsApp() { return { accounts: [], newName: '', newMerchantId: ''
         }
     },
     async addAccount() {
-        if(!this.newName) { alert('请填写账户名称'); return; }
+        if(!this.form.account_name) { alert('请填写账户名称'); return; }
         const r = await adminFetch('/admin/api/ad-accounts', {method:'POST',headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({account_name:this.newName,merchant_id:this.newMerchantId,notes:this.newNotes})});
+            body:JSON.stringify(this.form)});
         const j = await r.json();
-        if(j.code===0) { this.newName=''; this.newMerchantId=''; this.newNotes=''; this.loadData(); }
+        if(j.code===0) { this.showModal=false; this.loadData(); }
         else { alert(j.message||'新增失败'); }
     },
     async saveAccount(a) {

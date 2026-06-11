@@ -13,11 +13,16 @@ BASE_DIR = Path(__file__).resolve().parent
 async def lifespan(app: FastAPI):
     init_db()
     try:
-        from services.scheduler import init_scheduler
-        init_scheduler()
+        from services.scheduler import start_scheduler
+        start_scheduler()
     except Exception as e:
         print(f"Scheduler init warning: {e}")
     yield
+    try:
+        from services.scheduler import stop_scheduler
+        stop_scheduler()
+    except Exception:
+        pass
 
 app = FastAPI(title="AliveBroadcastData", lifespan=lifespan)
 

@@ -79,6 +79,67 @@ def analyze_session(db: DBSession, session_id: int) -> int:
     
     # 使用settings中的模板或默认格式
     template = config.get("ai_user_prompt_template", "")
+    
+    # ===== 计算历史对比数据 =====
+    from sqlalchemy import func as sa_func
+    from models import Lead as LeadModel, Comment as CommentModel
+    
+    # 查询历史所有场次的平均值（排除当前场次）
+    hist_metrics = db.query(
+        sa_func.avg(SessionMetric.exposure_entry_rate).label('avg_exposure_entry_rate'),
+        sa_func.avg(SessionMetric.cumulative_viewers).label('avg_cumulative_viewers'),
+        sa_func.avg(SessionMetric.ad_spend).label('avg_ad_spend'),
+        sa_func.avg(SessionMetric.avg_watch_duration).label('avg_watch_duration'),
+    ).filter(SessionMetric.session_id != session_id).first()
+    
+    # 历史每场平均留资数：统计每个场次的留资数，再取平均
+    hist_lead_counts = db.query(
+        sa_func.count(LeadModel.id).label('lead_cnt')
+    ).filter(LeadModel.session_id != session_id).group_by(LeadModel.session_id).all()
+    hist_lead_count = sum(r.lead_cnt for r in hist_lead_counts) / len(hist_lead_counts) if hist_lead_counts else 0
+    hist_comment_users = db.query(sa_func.avg(SessionMetric.comment_users)).filter(
+        SessionMetric.session_id != session_id, SessionMetric.comment_users != None
+    ).scalar() or 0
+    
+    # 当前场次指标
+    cur_exposure_entry_rate = float(getattr(metrics, 'exposure_entry_rate', 0) or 0)
+    cur_cumulative_viewers = float(getattr(metrics, 'cumulative_viewers', 0) or 0)
+    cur_ad_spend = float(getattr(metrics, 'ad_spend', 0) or 0)
+    cur_avg_watch_duration = float(getattr(metrics, 'avg_watch_duration', 0) or 0)
+    cur_comment_users = float(getattr(metrics, 'comment_users', 0) or 0)
+    cur_leads = len(leads)
+    
+    # 历史平均值
+    h_avg_exposure_entry = float(getattr(hist_metrics, 'avg_exposure_entry_rate', 0) or 0)
+    h_avg_cumulative_viewers = float(getattr(hist_metrics, 'avg_cumulative_viewers', 0) or 0)
+    h_avg_ad_spend = float(getattr(hist_metrics, 'avg_ad_spend', 0) or 0)
+    h_avg_watch_duration = float(getattr(hist_metrics, 'avg_watch_duration', 0) or 0)
+    h_avg_leads = float(hist_lead_count or 0)
+    h_avg_comment_users = float(hist_comment_users or 0)
+    
+    # 人均消耗 = 营销消耗 / 累计观看人数
+    cur_spend_per_viewer = round(cur_ad_spend / cur_cumulative_viewers, 2) if cur_cumulative_viewers > 0 else 0
+    h_spend_per_viewer = round(h_avg_ad_spend / h_avg_cumulative_viewers, 2) if h_avg_cumulative_viewers > 0 else 0
+    
+    # 留资数/评论人数
+    cur_leads_per_comment = round(cur_leads / cur_comment_users, 2) if cur_comment_users > 0 else 0
+    h_leads_per_comment = round(h_avg_leads / h_avg_comment_users, 2) if h_avg_comment_users > 0 else 0
+    
+    # 构建历史对比文本
+    history_text = f"""
+## 📊 核心指标 — 本场 vs 历史平均对比
+
+| 指标 | 本场 | 历史平均 | 趋势 |
+|------|------|----------|------|
+| 曝光进入率 | {cur_exposure_entry_rate:.2f}% | {h_avg_exposure_entry:.2f}% | {'↑ 高于' if cur_exposure_entry_rate > h_avg_exposure_entry else '↓ 低于' if cur_exposure_entry_rate < h_avg_exposure_entry else '→ 持平'} |
+| 累计观看人数 | {cur_cumulative_viewers:.0f}人 | {h_avg_cumulative_viewers:.0f}人 | {'↑ 高于' if cur_cumulative_viewers > h_avg_cumulative_viewers else '↓ 低于'} |
+| 人均消耗(元) | ¥{cur_spend_per_viewer:.2f} | ¥{h_spend_per_viewer:.2f} | {'↑ 升高' if cur_spend_per_viewer > h_spend_per_viewer else '↓ 降低'} |
+| 留资数 | {cur_leads}条 | {h_avg_leads:.1f}条 | {'↑ 高于' if cur_leads > h_avg_leads else '↓ 低于'} |
+| 评论人数 | {cur_comment_users:.0f}人 | {h_avg_comment_users:.0f}人 | {'↑ 高于' if cur_comment_users > h_avg_comment_users else '↓ 低于'} |
+| 留资数/评论人数 | {cur_leads_per_comment:.2f} | {h_leads_per_comment:.2f} | {'↑ 提升' if cur_leads_per_comment > h_leads_per_comment else '↓ 下降'} |
+| 人均观看时长 | {cur_avg_watch_duration:.2f}秒 | {h_avg_watch_duration:.2f}秒 | {'↑ 延长' if cur_avg_watch_duration > h_avg_watch_duration else '↓ 缩短'} |
+"""
+    
     if template and "{{" in template:
         user_prompt = template.replace("{{start_time}}", session.start_time) \
             .replace("{{end_time}}", session.end_time) \
@@ -90,7 +151,8 @@ def analyze_session(db: DBSession, session_id: int) -> int:
             .replace("{{comments_count}}", str(len(comments))) \
             .replace("{{comments_text}}", comments_text) \
             .replace("{{high_intent_count}}", str(len(hiu))) \
-            .replace("{{high_intent_text}}", hiu_text)
+            .replace("{{high_intent_text}}", hiu_text) \
+            .replace("{{history_text}}", history_text)
     else:
         user_prompt = f"""请按以下结构分析本场直播数据：
 
@@ -98,6 +160,8 @@ def analyze_session(db: DBSession, session_id: int) -> int:
 - 直播时间：{session.start_time} ~ {session.end_time}
 - 直播时长：{session.duration_minutes}分钟
 - 营销消耗：¥{metrics.ad_spend if metrics else 0}
+
+{history_text}
 
 ## 核心指标（44项）
 {metrics_text}
@@ -109,10 +173,10 @@ def analyze_session(db: DBSession, session_id: int) -> int:
 请遵循五维四率方法论和复盘策略，按以下格式输出：
 
 ### 一、整体评价
-用1-10分评价本场表现，1-2句话概括
+用1-10分评价本场表现，1-2句话概括，重点与历史平均对比
 
-### 二、五维数据概览
-按五个维度逐层展示数据：曝光人数→观看人数→商品曝光次数→商品点击人数→留资人数
+### 二、核心指标对比分析
+基于上面的对比表格，逐项分析每项指标的变化趋势和原因
 
 ### 三、四率漏斗分析
 逐层计算转化率，标注瓶颈环节：
@@ -121,9 +185,8 @@ def analyze_session(db: DBSession, session_id: int) -> int:
 3. 商品留资率 = 留资人数/商品点击人数
 4. 点击成交率(结合成单数据)
 
-### 四、复盘亮点与问题
-- 亮点：曝光和进房峰值时段分析，高互动话术总结
-- 问题：数据异常环节识别
+### 四、发展趋势判断
+综合本场与历史数据的对比，给出1-2句对后续直播的趋势判断
 
 ### 五、优化建议
 区分运营侧和主播侧，给出3-5条具体可执行的建议"""
@@ -161,7 +224,7 @@ def analyze_session(db: DBSession, session_id: int) -> int:
         existing.generated_at = datetime.now().isoformat()
         report_id = existing.id
     else:
-        report = Report(session_id=session_id, report_type="session", period=session.start_time[:10], content=response.choices[0].message.content)
+        report = Report(session_id=session_id, report_type="session", period=session.start_time[:10], content=response.choices[0].message.content, generated_at=datetime.now().isoformat())
         db.add(report); db.flush()
         report_id = report.id
     session.analyzed = True; session.analyzed_at = datetime.now().isoformat()

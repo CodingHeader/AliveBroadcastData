@@ -1,18 +1,146 @@
 {% extends "admin/base.html" %}
 {% block admin_content %}
 <div x-data="anchorsApp()" x-init="loadData()" class="space-y-4">
+    <div x-show="message" :class="messageType === 'error' ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'" class="p-3 rounded-lg">
+        <span x-text="message"></span>
+    </div>
     <div class="flex justify-between items-center">
         <h2 class="text-xl font-bold">主播配置</h2>
-        <div class="flex space-x-2"><input x-model="newName" placeholder="主播名称" class="form-input max-w-xs"><button @click="addAnchor()" class="btn-primary">新增</button></div>
+        <button @click="resetForm(); showAddModal = true" class="btn-primary">+ 新增主播</button>
     </div>
-    <div class="bg-white rounded-lg shadow-sm overflow-x-auto"><table class="data-table"><thead><tr><th>ID</th><th>名称</th><th>操作</th></tr></thead>
-    <tbody><template x-for="a in anchors"><tr><td x-text="a.id"></td><td x-text="a.name"></td><td><button @click="deleteAnchor(a.id)" class="text-red-500 hover:text-red-700 text-sm">删除</button></td></tr></template></tbody></table></div>
+    <div class="bg-white rounded-lg shadow-sm overflow-x-auto">
+        <table class="data-table">
+            <thead><tr><th>ID</th><th>名称</th><th>性别</th><th>风格</th><th>类型</th><th>操作</th></tr></thead>
+            <tbody>
+                <template x-for="a in anchors" :key="a.id">
+                    <tr>
+                        <td x-text="a.id"></td>
+                        <td>
+                            <span x-show="!a._editing" x-text="a.name"></span>
+                            <input x-show="a._editing" x-model="a.name" class="form-input w-32 py-1">
+                        </td>
+                        <td>
+                            <span x-show="!a._editing" x-text="a.gender || '-'"></span>
+                            <select x-show="a._editing" x-model="a.gender" class="form-input w-20 py-1">
+                                <option value="">-</option>
+                                <option value="男">男</option>
+                                <option value="女">女</option>
+                            </select>
+                        </td>
+                        <td>
+                            <span x-show="!a._editing" x-text="a.style || '-'"></span>
+                            <input x-show="a._editing" x-model="a.style" class="form-input w-32 py-1" placeholder="风格">
+                        </td>
+                        <td>
+                            <span x-show="!a._editing" :class="a.is_parttime ? 'text-orange-600' : 'text-green-600'" x-text="a.is_parttime ? '兼职' : '全职'"></span>
+                            <label x-show="a._editing" class="flex items-center gap-1"><input type="checkbox" x-model="a.is_parttime" class="rounded">兼职</label>
+                        </td>
+                        <td class="space-x-2">
+                            <template x-if="!a._editing">
+                                <button @click="a._editing=true" class="text-blue-500 hover:text-blue-700 text-sm">编辑</button>
+                            </template>
+                            <template x-if="a._editing">
+                                <button @click="saveAnchor(a)" class="text-green-500 hover:text-green-700 text-sm">保存</button>
+                            </template>
+                            <button @click="deleteAnchor(a.id)" class="text-red-500 hover:text-red-700 text-sm">删除</button>
+                        </td>
+                    </tr>
+                </template>
+            </tbody>
+        </table>
+    </div>
+
+    <!-- 新增主播弹窗 -->
+    <div x-show="showAddModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center" x-cloak @click.self="showAddModal=false">
+        <div class="bg-white p-6 rounded-lg shadow-xl w-[400px] space-y-4">
+            <h3 class="font-bold text-lg">新增主播</h3>
+            <input x-model="newName" placeholder="主播名称" class="form-input">
+            <select x-model="newGender" class="form-input w-full">
+                <option value="">性别</option>
+                <option value="男">男</option>
+                <option value="女">女</option>
+            </select>
+            <input x-model="newStyle" placeholder="风格" class="form-input">
+            <label class="flex items-center gap-2"><input type="checkbox" x-model="newParttime" class="rounded">兼职</label>
+            <div class="flex space-x-2">
+                <button @click="addAnchor()" class="btn-primary">保存</button>
+                <button @click="showAddModal = false; resetForm()" class="bg-gray-200 px-4 py-2 rounded hover:bg-gray-300">取消</button>
+            </div>
+        </div>
+    </div>
 </div>
 <script>
-function anchorsApp() { return { anchors: [], newName: '',
-    async loadData() { const r = await adminFetch('/admin/api/anchors'); const j = await r.json(); this.anchors = j.data || []; },
-    async addAnchor() { if(!this.newName) return; await adminFetch('/admin/api/anchors', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:this.newName})}); this.newName=''; this.loadData(); },
-    async deleteAnchor(id) { if(!confirm('确认删除?')) return; await adminFetch(`/admin/api/anchors/${id}`, {method:'DELETE'}); this.loadData(); }
+function anchorsApp() { return { anchors: [], newName: '', newGender: '', newStyle: '', newParttime: false, showAddModal: false, message: '', messageType: 'success',
+    resetForm() {
+        this.newName = '';
+        this.newGender = '';
+        this.newStyle = '';
+        this.newParttime = false;
+    },
+    showMessage(msg, type = 'success') {
+        this.message = msg;
+        this.messageType = type;
+        setTimeout(() => this.message = '', 3000);
+    },
+    async loadData() {
+        const r = await adminFetch('/admin/api/anchors'); const j = await r.json();
+        this.anchors = (j.data || []).map(a => ({...a, _editing: false}));
+    },
+    async addAnchor() {
+        if(!this.newName) {
+            this.showMessage('请输入主播名称', 'error');
+            return;
+        }
+        try {
+            console.log('[addAnchor] 开始新增主播:', this.newName);
+            console.log('[addAnchor] adminFetch 类型:', typeof adminFetch);
+            const r = await adminFetch('/admin/api/anchors', {method:'POST',headers:{'Content-Type':'application/json'},
+                body:JSON.stringify({name:this.newName, gender:this.newGender, style:this.newStyle, is_parttime:this.newParttime ? 1 : 0})});
+            console.log('[addAnchor] 响应状态:', r.status);
+            const j = await r.json();
+            console.log('[addAnchor] 响应数据:', j);
+            if (j.code !== 0) {
+                this.showMessage(j.message || '新增失败', 'error');
+                return;
+            }
+            this.showMessage('新增成功');
+            this.showAddModal = false;
+            this.resetForm(); this.loadData();
+        } catch (e) {
+            console.error('[addAnchor] 错误:', e);
+            this.showMessage('新增失败: ' + e.message, 'error');
+        }
+    },
+    async saveAnchor(a) {
+        try {
+            const r = await adminFetch(`/admin/api/anchors/${a.id}`, {method:'PUT',headers:{'Content-Type':'application/json'},
+                body:JSON.stringify({name:a.name, gender:a.gender, style:a.style, is_parttime:a.is_parttime ? 1 : 0})});
+            const j = await r.json();
+            if (j.code !== 0) {
+                this.showMessage(j.message || '保存失败', 'error');
+                return;
+            }
+            this.showMessage('保存成功');
+            a._editing = false;
+        } catch (e) {
+            this.showMessage('网络错误，请重试', 'error');
+        }
+    },
+    async deleteAnchor(id) {
+        if(!confirm('确认删除?')) return;
+        try {
+            const r = await adminFetch(`/admin/api/anchors/${id}`, {method:'DELETE'});
+            const j = await r.json();
+            if (j.code !== 0) {
+                this.showMessage(j.message || '删除失败', 'error');
+                return;
+            }
+            this.showMessage('删除成功');
+            this.loadData();
+        } catch (e) {
+            this.showMessage('网络错误，请重试', 'error');
+        }
+    }
 }; }
 </script>
 {% endblock %}

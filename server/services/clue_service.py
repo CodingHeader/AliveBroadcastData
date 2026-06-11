@@ -112,28 +112,15 @@ def batch_decrypt_phone(access_token: str, account_id: str, encrypted_phones: Li
         return {}
 
 
-def _time_in_range(on_time: str, off_time: str, target_time: str) -> bool:
-    """判断时间是否在主播时段内（支持跨天）"""
-    try:
-        target_min = int(target_time[:2]) * 60 + int(target_time[3:5])
-        on_min = int(on_time[:2]) * 60 + int(on_time[3:])
-        off_min = int(off_time[:2]) * 60 + int(off_time[3:])
-        if off_min <= on_min:
-            off_min += 24 * 60
-        if target_min < on_min:
-            target_min += 24 * 60
-        return on_min <= target_min < off_min
-    except (ValueError, IndexError, TypeError):
-        return False
-
-
-def match_anchor(create_time_detail: str, db) -> Optional[int]:
+def match_anchor(create_time_detail: str, db) -> list:
     """根据线索创建时间匹配主播的实际直播时段
     优先从 SessionAnchor（实际场次）匹配 on_time/off_time 区间
     回退到 ScheduleBinding 排班方案匹配
+    返回匹配到的anchor_id列表（同一时段多主播同时在线时返回多个）
     """
+    from utils import time_in_range
     if not create_time_detail:
-        return None
+        return []
     try:
         from models import SessionAnchor, Session, Anchor
         clue_dt = datetime.strptime(create_time_detail, "%Y-%m-%d %H:%M:%S")
@@ -141,6 +128,8 @@ def match_anchor(create_time_detail: str, db) -> Optional[int]:
         time_str = clue_dt.strftime("%H:%M")
 
         # 方式1：从 SessionAnchor 按 on_time/off_time 区间匹配（最高优先级）
+        # 同一时段可能有多个主播同时在线（双人档），全部返回
+        matched = []
         sessions = db.query(Session).filter(
             Session.start_time >= f"{date_str} 00:00:00",
             Session.start_time < f"{date_str} 23:59:59"
@@ -150,10 +139,14 @@ def match_anchor(create_time_detail: str, db) -> Optional[int]:
                 SessionAnchor.session_id == session.id
             ).all()
             for sa in sa_list:
-                if sa.on_time and sa.off_time and _time_in_range(sa.on_time, sa.off_time, time_str):
-                    return sa.anchor_id
+                if sa.on_time and sa.off_time and time_in_range(sa.on_time, sa.off_time, time_str):
+                    matched.append(sa.anchor_id)
+
+        if matched:
+            return matched
 
         # 方式2：从 ScheduleBinding 排班方案匹配（备选）
+        from models import ScheduleBinding, SchedulePlan, ScheduleSlot
         binding = db.query(ScheduleBinding).filter(ScheduleBinding.date == date_str).first()
         if binding:
             plan = db.query(SchedulePlan).filter(SchedulePlan.id == binding.plan_id).first()
@@ -167,16 +160,18 @@ def match_anchor(create_time_detail: str, db) -> Optional[int]:
                     if anchor_mapping:
                         anchor_id_str = anchor_mapping.get(str(slot.anchor_slot))
                         if anchor_id_str:
-                            return int(anchor_id_str)
+                            if isinstance(anchor_id_str, list):
+                                return [int(a) for a in anchor_id_str if a]
+                            return [int(anchor_id_str)]
                     # 方式3：按anchor_slot序号映射
                     anchors = db.query(Anchor).order_by(Anchor.is_parttime, Anchor.id).all()
                     if slot.anchor_slot and slot.anchor_slot <= len(anchors):
-                        return anchors[slot.anchor_slot - 1].id
+                        return [anchors[slot.anchor_slot - 1].id]
 
-        return None
+        return []
     except Exception as e:
         logger.warning(f"匹配主播失败: {e}")
-        return None
+        return []
 
 
 def poll_clues_for_account(config, db, triggered_by="scheduler"):
@@ -246,13 +241,56 @@ def poll_clues_for_account(config, db, triggered_by="scheduler"):
             enc_phone = clue.get("enc_telephone")
             phone_dec = dec_map.get(enc_phone) if enc_phone else None
 
-            anchor_id = match_anchor(clue.get("create_time_detail"), db)
-            anchor_name = None
-            if anchor_id:
+            anchor_ids = match_anchor(clue.get("create_time_detail"), db)
+            anchor_id = anchor_ids[0] if anchor_ids else None
+            anchor_names = None
+            if anchor_ids:
                 from models import Anchor
-                anchor_obj = db.query(Anchor).get(anchor_id)
-                if anchor_obj:
-                    anchor_name = anchor_obj.name
+                anchor_objs = db.query(Anchor).filter(Anchor.id.in_(anchor_ids)).all()
+                anchor_names = ",".join([a.name for a in anchor_objs])
+
+            # 反向去重：API记录写入前，检查是否已有 tm_ 桥接记录（油猴先到）
+            if phone_dec and len(phone_dec) >= 4:
+                suffix = phone_dec[-4:]
+                clue_date = clue.get("create_time_detail", "")[:10]
+                if suffix and clue_date:
+                    existing_tm = db.query(ApiClue).filter(
+                        ApiClue.clue_source == 'tm',
+                        ApiClue.phone_masked.like(f"%{suffix}"),
+                        ApiClue.create_time_detail.like(f"{clue_date}%"),
+                        ApiClue.session_id != None,
+                    ).first()
+                    if existing_tm:
+                        saved_session_id = existing_tm.session_id
+                        saved_phone_masked = existing_tm.phone_masked
+                        saved_nickname = existing_tm.nickname
+                        saved_lead_time = existing_tm.lead_time
+                        for k in ('clue_id','enc_telephone','name','create_time_detail','modify_time',
+                                  'author_nickname','author_douyin_id','author_role',
+                                  'advertiser_id','advertiser_name','ad_type',
+                                  'promotion_id','promotion_name','product_id','product_name','product_type',
+                                  'content_id','video_id','flow_entrance','flow_type','leads_page',
+                                  'clue_type','clue_intention','convert_status','allocation_status','effective_state',
+                                  'auto_city_name','auto_province_name','province_name','city_name','county_name',
+                                  'tel_addr','ad_id','search_bid_word','gender','age','weixin'):
+                            setattr(existing_tm, k, clue.get(k))
+                        existing_tm.is_private_clue = clue.get("is_private_clue", 0)
+                        existing_tm.account_id = account_id
+                        existing_tm.phone_decrypted = phone_dec
+                        existing_tm.is_decrypted = True
+                        existing_tm.clue_source = 'api'
+                        existing_tm.session_id = saved_session_id
+                        existing_tm.phone_masked = saved_phone_masked
+                        existing_tm.nickname = saved_nickname
+                        existing_tm.lead_time = saved_lead_time
+                        existing_tm.anchor_id = anchor_id
+                        existing_tm.anchor_names = anchor_names
+                        for f in ('tags','system_tags','ext_info'):
+                            v = clue.get(f)
+                            setattr(existing_tm, f, json.dumps(v, ensure_ascii=False) if isinstance(v, (list,dict)) else v)
+                        existing_tm.raw_data = json.dumps(clue, ensure_ascii=False)
+                        new_count += 1
+                        continue
 
             record = ApiClue(
                 clue_id=clue_id,
@@ -300,7 +338,7 @@ def poll_clues_for_account(config, db, triggered_by="scheduler"):
                 system_tags=json.dumps(clue.get("system_tags"), ensure_ascii=False) if isinstance(clue.get("system_tags"), (list, dict)) else clue.get("system_tags"),
                 ext_info=json.dumps(clue.get("ext_info"), ensure_ascii=False) if isinstance(clue.get("ext_info"), (list, dict)) else clue.get("ext_info"),
                 anchor_id=anchor_id,
-                anchor_names=anchor_name,
+                anchor_names=anchor_names,
                 raw_data=json.dumps(clue, ensure_ascii=False),
             )
             db.add(record)

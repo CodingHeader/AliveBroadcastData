@@ -429,10 +429,10 @@ def anchor_salary_calc(data: dict, admin=Depends(get_current_admin), db: DBSessi
     date_to = data.get("date_to")
     anchor_id = data.get("anchor_id")
     anchor_name = data.get("anchor_name")
-    base_rate = data.get("base_rate", 40)
-    lead_commission = data.get("lead_commission", 0)
-    ad_commission = data.get("ad_commission", 0)
-    natural_commission = data.get("natural_commission", 0)
+    base_rate = float(data.get("base_rate", 40))
+    lead_commission = float(data.get("lead_commission", 0))
+    ad_commission = float(data.get("ad_commission", 0))
+    natural_commission = float(data.get("natural_commission", 0))
 
     stats = get_comprehensive_stats(db, date_from, date_to, anchor_id, anchor_name)
 

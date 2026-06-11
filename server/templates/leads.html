@@ -5,7 +5,7 @@
     <div class="flex space-x-4 flex-wrap">
         <input x-model="keyword" placeholder="关键词" class="form-input max-w-xs text-sm py-1.5">
         <select x-model="city" class="form-input max-w-xs text-sm py-1.5"><option value="">全部城市</option></select>
-        <button @click="loadData()" class="btn-primary text-sm py-1.5">查询</button>
+        <button @click="page=1; loadData()" class="btn-primary text-sm py-1.5">查询</button>
         <a href="/api/export/leads" class="btn-success text-sm py-1.5 no-underline">导出Excel</a>
         <a href="/clue-board" target="_blank" class="bg-purple-600 text-white px-4 py-1.5 rounded text-sm no-underline hover:bg-purple-700">📋 线索领取看板</a>
     </div>
@@ -17,10 +17,20 @@
         <table class="data-table"><thead><tr><th>时间</th><th>昵称</th><th>城市</th><th>路径</th><th>账户</th><th>成单</th></tr></thead>
         <tbody><template x-for="l in leads"><tr><td x-text="l.lead_time"></td><td x-text="l.nickname"></td><td x-text="l.city"></td><td x-text="l.path"></td><td x-text="l.ad_account"></td><td x-text="l.is_deal?'是':'否'"></td></tr></template></tbody></table>
     </div>
+    <div class="flex items-center justify-between" x-show="total > size">
+        <div class="text-sm text-gray-500" x-text="`共 ${total} 条`"></div>
+        <div class="flex gap-2">
+            <button @click="page>1&&(page--,loadData())" :disabled="page<=1"
+                class="px-3 py-1 border rounded text-sm" :class="page<=1?'text-gray-300':'hover:bg-gray-50'">上一页</button>
+            <span class="px-3 py-1 text-sm" x-text="`${page} / ${Math.ceil(total/size)}`"></span>
+            <button @click="page*size<total&&(page++,loadData())" :disabled="page*size>=total"
+                class="px-3 py-1 border rounded text-sm" :class="page*size>=total?'text-gray-300':'hover:bg-gray-50'">下一页</button>
+        </div>
+    </div>
 </div>
 {% endblock %}
 {% block scripts %}
 <script>
-function leadsApp() { return { keyword: '', city: '', leads: [], charts: {}, async loadData() { const resp = await fetch(`/api/leads?keyword=${this.keyword}&city=${this.city}`); const json = await resp.json(); this.leads = json.data?.items || []; this.charts = json.data?.charts || {}; this.renderPies(); }, renderPies() { if (this.charts.source) { const c = echarts.init(document.getElementById('sourcePie')); c.setOption({series:[{type:'pie',data:[{value:this.charts.source.paid,name:'付费'},{value:this.charts.source.organic,name:'自然'}]}]}); } } }; }
+function leadsApp() { return { keyword: '', city: '', leads: [], charts: {}, page: 1, size: 20, total: 0, async loadData() { const resp = await fetch(`/api/leads?keyword=${this.keyword}&city=${this.city}&page=${this.page}&size=${this.size}`); const json = await resp.json(); this.leads = json.data?.items || []; this.total = json.data?.total || 0; this.charts = json.data?.charts || {}; this.renderPies(); }, renderPies() { if (this.charts.source) { const c = echarts.init(document.getElementById('sourcePie')); c.setOption({series:[{type:'pie',data:[{value:this.charts.source.paid,name:'付费'},{value:this.charts.source.organic,name:'自然'}]}]}); } } }; }
 </script>
 {% endblock %}

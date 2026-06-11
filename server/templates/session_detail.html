@@ -3,10 +3,50 @@
 <div x-data="sessionDetailApp()" x-init="loadData()" class="space-y-6">
     <div class="bg-white rounded-lg shadow-sm p-4">
         <h1 class="page-title">场次详情</h1>
-        <p x-show="session" class="text-gray-600" x-text="session?.start_time + ' ~ ' + session?.end_time + ' (' + session?.duration_minutes + '分钟)'"></p>
+        <div class="flex items-center gap-2">
+            <p x-show="session" class="text-gray-600" x-text="session?.start_time + ' ~ ' + session?.end_time + ' (' + session?.duration_minutes + '分钟)'"></p>
+            <button x-show="isAdmin" @click="showEndTimeModal()" class="text-blue-500 hover:text-blue-700 text-sm">编辑结束时间</button>
+        </div>
         <div class="flex space-x-4 mt-2 text-sm text-gray-500">
             <span x-show="anchors?.length">主播: <span x-text="anchors?.map(a=>a.name).join(', ')"></span></span>
             <span x-show="!anchors?.length" class="text-orange-500 font-medium">⚠ 未关联主播</span>
+        </div>
+        <!-- 排班信息 -->
+        <div x-show="scheduleData" class="mt-3 p-3 bg-blue-50 rounded-lg">
+            <div class="flex items-center gap-2 mb-2">
+                <svg class="w-4 h-4 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+                <span class="font-medium text-blue-700" x-text="'排班方案: ' + scheduleData?.plan?.name"></span>
+                <span class="text-blue-500 text-xs" x-text="scheduleData?.plan?.start_time + ' - ' + scheduleData?.plan?.end_time"></span>
+            </div>
+            <div class="overflow-x-auto">
+                <table class="text-xs w-full">
+                    <thead><tr class="bg-blue-100">
+                        <th class="px-2 py-1 text-left">时段</th>
+                        <template x-for="r in scheduleData?.plan?.room_count || 0" :key="r"><th class="px-2 py-1" x-text="'直播间'+r"></th></template>
+                    </tr></thead>
+                    <tbody>
+                        <template x-for="slot in scheduleTimeSlots" :key="slot">
+                            <tr class="border-b border-blue-100">
+                                <td class="px-2 py-1 font-mono whitespace-nowrap" x-text="slot"></td>
+                                <template x-for="r in scheduleData?.plan?.room_count || 0" :key="r">
+                                    <td class="px-2 py-1">
+                                        <template x-if="getScheduleSlot(slot, r)?.slot_status === 'on_air_anchor'">
+                                            <span class="inline-block bg-green-100 text-green-700 px-1.5 py-0.5 rounded"
+                                                x-text="scheduleData?.anchor_mapping?.[getScheduleSlot(slot,r).anchor_slot]?.name || '主播'+getScheduleSlot(slot,r).anchor_slot"></span>
+                                        </template>
+                                        <template x-if="getScheduleSlot(slot, r)?.slot_status === 'on_air_empty'">
+                                            <span class="text-gray-400">待排</span>
+                                        </template>
+                                        <template x-if="getScheduleSlot(slot, r)?.slot_status === 'off_air'">
+                                            <span class="text-gray-300">休息</span>
+                                        </template>
+                                    </td>
+                                </template>
+                            </tr>
+                        </template>
+                    </tbody>
+                </table>
+            </div>
         </div>
         <div x-show="isAdmin" class="mt-3 pt-3 border-t border-gray-100">
             <div class="flex items-center gap-2">
@@ -74,6 +114,25 @@
         <div x-show="funnel.exposure || funnel.view || funnel.interaction || funnel.leads" id="funnelChart" style="height:400px;"></div>
     </div>
     <div x-show="activeTab==='ai_report'" class="bg-white rounded-lg shadow-sm p-4 prose max-w-none" x-html="reportContent"></div>
+
+    <!-- 编辑结束时间弹窗 -->
+    <div x-show="endTimeModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center" x-cloak>
+        <div class="bg-white p-6 rounded-lg shadow-xl w-[400px] space-y-4">
+            <h3 class="font-bold text-lg">编辑结束时间</h3>
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">新结束时间</label>
+                <input x-model="newEndTime" type="datetime-local" class="form-input">
+            </div>
+            <div class="text-sm text-gray-500">
+                <p>当前开始时间: <span x-text="session?.start_time"></span></p>
+                <p>预计直播时长: <span x-text="calculatedDuration"></span> 分钟</p>
+            </div>
+            <div class="flex space-x-2 pt-2">
+                <button @click="saveEndTime()" class="btn-primary">保存</button>
+                <button @click="endTimeModal=false" class="bg-gray-200 px-4 py-2 rounded hover:bg-gray-300">取消</button>
+            </div>
+        </div>
+    </div>
 </div>
 {% endblock %}
 {% block scripts %}
@@ -87,7 +146,8 @@ function sessionDetailApp() {
             {key:'leads',label:'线索'},{key:'comments',label:'评论'},{key:'high_intent',label:'高意向'},
             {key:'funnel',label:'漏斗'},{key:'ai_report',label:'AI分析'}
         ],
-        session: null, metrics: {}, leads: [], comments: [], highIntentUsers: [], reportContent: '', funnel: {}, anchors: [], isAdmin: false, allAnchors: [], selectedAnchorIds: [],
+        session: null, metrics: {}, leads: [], comments: [], highIntentUsers: [], reportContent: '', funnel: {}, anchors: [], isAdmin: false, allAnchors: [], selectedAnchorIds: [], scheduleData: null,
+        endTimeModal: false, newEndTime: '',
         metricLabels: {
             exposure_count:'曝光人数',cumulative_viewers:'累计观看',exposure_entry_rate:'曝光进入率',view_count:'观看次数',
             watch_gt_1min:'>1分钟观看',avg_watch_duration:'人均观看时长',fan_stay_duration:'粉丝停留',
@@ -112,6 +172,15 @@ function sessionDetailApp() {
         metricGroup(group) {
             return (this.metricGroups[group]||[]).map(k => ({label: this.metricLabels[k]||k, value: this.metrics[k]??'--'}));
         },
+        get scheduleTimeSlots() {
+            if (!this.scheduleData?.slots) return [];
+            const seen = new Set(); const result = [];
+            for(const s of this.scheduleData.slots) { if(!seen.has(s.time_slot)) { seen.add(s.time_slot); result.push(s.time_slot); } }
+            return result;
+        },
+        getScheduleSlot(timeSlot, roomIndex) {
+            return this.scheduleData?.slots?.find(s => s.time_slot === timeSlot && s.room_index === roomIndex) || null;
+        },
         statusColor(s) { return s==='已留资'?'bg-green-100 text-green-800':(s==='忽略'?'bg-red-100 text-red-800':'bg-yellow-100 text-yellow-800'); },
         formatCommentTime(t) {
             if (!t) return '-';
@@ -132,11 +201,20 @@ function sessionDetailApp() {
             this.selectedAnchorIds = d.anchors?.map(a=>a.id) || [];
             this.reportContent = d.report?.content ? marked.parse(d.report.content) : '<p class="text-gray-500">暂无AI分析报告</p>';
             this.funnel = d.funnel || {};
-            this.isAdmin = !!localStorage.getItem('token');
+            this.isAdmin = !!localStorage.getItem('admin_token');
             if (this.isAdmin) {
-                const anchorResp = await fetch('/admin/api/anchors', {headers:{'Authorization':'Bearer '+localStorage.getItem('token')}});
+                const anchorResp = await fetch('/admin/api/anchors', {headers:{'Authorization':'Bearer '+localStorage.getItem('admin_token')}});
                 const anchorJson = await anchorResp.json();
                 this.allAnchors = anchorJson.data || [];
+            }
+            // 加载排班数据
+            if (this.session?.start_time) {
+                const dateStr = this.session.start_time.slice(0, 10);
+                try {
+                    const schedResp = await fetch(`/api/schedule?date=${dateStr}`);
+                    const schedJson = await schedResp.json();
+                    this.scheduleData = schedJson.data || null;
+                } catch(e) {}
             }
             this.$nextTick(() => { if (this.activeTab==='funnel') this.renderFunnel(); });
         },
@@ -144,7 +222,7 @@ function sessionDetailApp() {
             const id = location.pathname.split('/').pop();
             const resp = await fetch(`/admin/api/sessions/${id}/anchors`, {
                 method: 'POST',
-                headers: {'Authorization':'Bearer '+localStorage.getItem('token'), 'Content-Type':'application/json'},
+                headers: {'Authorization':'Bearer '+localStorage.getItem('admin_token'), 'Content-Type':'application/json'},
                 body: JSON.stringify({anchor_ids: this.selectedAnchorIds})
             });
             const json = await resp.json();
@@ -171,6 +249,39 @@ function sessionDetailApp() {
                     return p.name+'\n'+p.value+'\n('+rate+'%)';
                 }}
             }],tooltip:{trigger:'item'}});
+        },
+        showEndTimeModal() {
+            this.newEndTime = this.session?.end_time || '';
+            this.endTimeModal = true;
+        },
+        get calculatedDuration() {
+            if (!this.session?.start_time || !this.newEndTime) return '--';
+            try {
+                const start = new Date(this.session.start_time);
+                const end = new Date(this.newEndTime);
+                return Math.round((end - start) / 60000);
+            } catch(e) {
+                return '--';
+            }
+        },
+        async saveEndTime() {
+            if (!this.newEndTime) {
+                alert('请选择结束时间');
+                return;
+            }
+            const id = location.pathname.split('/').pop();
+            const resp = await fetch(`/admin/api/sessions/${id}/end-time`, {
+                method: 'PUT',
+                headers: {'Authorization':'Bearer '+localStorage.getItem('admin_token'), 'Content-Type':'application/json'},
+                body: JSON.stringify({end_time: this.newEndTime})
+            });
+            const json = await resp.json();
+            if (json.code === 0) {
+                alert('结束时间已更新');
+                location.reload();
+            } else {
+                alert(json.message || '更新失败');
+            }
         }
     };
 }

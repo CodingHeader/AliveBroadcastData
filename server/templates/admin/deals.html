@@ -1,14 +1,68 @@
 {% extends "admin/base.html" %}
 {% block admin_content %}
-<div x-data="dealsApp()" x-init="loadData();loadSessions()" class="space-y-4">
+<div x-data="dealsApp()" x-init="loadData();loadSessions();loadTeams();loadStats()" class="space-y-4">
     <div class="flex justify-between items-center">
         <h2 class="text-xl font-bold">成单管理</h2>
         <button @click="showModal=true" class="btn-primary">新增成单</button>
     </div>
-    <table class="data-table bg-white rounded-lg shadow-sm"><thead><tr><th>客户</th><th>关联线索</th><th>金额</th><th>成交时间</th><th>员工</th><th>操作</th></tr></thead>
-    <tbody><template x-for="d in deals"><tr><td x-text="d.customer_name"></td><td><span x-text="d.lead_nickname||'-'" :class="d.lead_nickname?'text-blue-600':'text-gray-400'"></span></td><td x-text="'¥'+d.amount"></td><td x-text="d.deal_time"></td><td x-text="d.employee||'-'"></td><td><button @click="deleteDeal(d.id)" class="text-red-500 hover:text-red-700 text-sm">删除</button></td></tr></template></tbody></table>
+    <table class="data-table bg-white rounded-lg shadow-sm">
+        <thead><tr><th>客户</th><th>关联线索</th><th>金额</th><th>成交时间</th><th>团队</th><th>员工</th><th>操作</th></tr></thead>
+        <tbody>
+            <template x-for="d in deals" :key="d.id">
+                <tr>
+                    <td x-text="d.customer_name"></td>
+                    <td><span x-text="d.lead_nickname||'-'" :class="d.lead_nickname?'text-blue-600':'text-gray-400'"></span></td>
+                    <td x-text="'¥'+d.amount"></td>
+                    <td x-text="d.deal_time"></td>
+                    <td><span x-text="d.team_name||'-'" :class="d.team_name?'text-indigo-600':'text-gray-400'"></span></td>
+                    <td><span x-text="d.employee_name||d.employee||'-'" :class="d.employee_name?'text-green-600':'text-gray-400'"></span></td>
+                    <td><button @click="deleteDeal(d.id)" class="text-red-500 hover:text-red-700 text-sm">删除</button></td>
+                </tr>
+            </template>
+        </tbody>
+    </table>
+    <div class="flex justify-between items-center">
+        <button @click="page--;loadData()" :disabled="page<=1" class="px-3 py-1 border rounded disabled:opacity-50">上一页</button>
+        <span class="text-sm">第 <span x-text="page"></span> 页 / 共 <span x-text="total"></span> 条</span>
+        <button @click="page++;loadData()" :disabled="page*pageSize>=total" class="px-3 py-1 border rounded disabled:opacity-50">下一页</button>
+    </div>
+
+    <!-- 成单统计 -->
+    <div class="bg-white rounded-lg shadow-sm p-4 space-y-3">
+        <div class="flex items-center justify-between">
+            <h3 class="font-bold text-lg">成单统计</h3>
+            <div class="flex items-center gap-2">
+                <input type="date" x-model="statsFrom" @change="loadStats()" class="form-input text-sm py-1">
+                <span class="text-gray-400">~</span>
+                <input type="date" x-model="statsTo" @change="loadStats()" class="form-input text-sm py-1">
+            </div>
+        </div>
+        <template x-for="team in stats" :key="team.team_id">
+            <div class="border rounded-lg p-3 space-y-2">
+                <div class="flex items-center justify-between">
+                    <span class="font-medium text-indigo-700" x-text="team.team_name"></span>
+                    <span class="text-sm text-gray-500">成单 <span x-text="team.total_deals"></span> 笔 / 金额 ¥<span x-text="team.total_amount.toFixed(2)"></span></span>
+                </div>
+                <table class="w-full text-sm">
+                    <thead><tr class="text-gray-500 border-b"><th class="text-left py-1">员工</th><th class="text-right py-1">成单数</th><th class="text-right py-1">总金额</th><th class="text-right py-1">平均客单价</th></tr></thead>
+                    <tbody>
+                        <template x-for="emp in team.employees" :key="emp.employee_id">
+                            <tr class="border-b border-gray-100">
+                                <td class="py-1" x-text="emp.employee_name"></td>
+                                <td class="text-right py-1" x-text="emp.deal_count"></td>
+                                <td class="text-right py-1">¥<span x-text="emp.total_amount.toFixed(2)"></span></td>
+                                <td class="text-right py-1">¥<span x-text="emp.avg_amount.toFixed(2)"></span></td>
+                            </tr>
+                        </template>
+                    </tbody>
+                </table>
+            </div>
+        </template>
+        <div x-show="stats.length===0" class="text-center text-gray-400 py-4">暂无成单统计数据</div>
+    </div>
+
     <div x-show="showModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center" @click.self="showModal=false">
-        <div class="bg-white p-6 rounded-lg shadow-xl w-[480px] space-y-3">
+        <div class="bg-white p-6 rounded-lg shadow-xl w-[520px] space-y-3">
             <h3 class="font-bold">新增成单</h3>
             <select x-model="form.session_id" @change="loadLeads()" class="form-input">
                 <option value="">选择场次</option>
@@ -21,26 +75,87 @@
             <input x-model="form.customer_name" placeholder="客户姓名" class="form-input">
             <input x-model="form.amount" type="number" placeholder="成交金额" class="form-input">
             <input x-model="form.deal_time" type="date" class="form-input">
-            <input x-model="form.employee" placeholder="负责员工" class="form-input">
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">成单团队</label>
+                <select x-model="form.team_id" @change="onTeamChange()" class="form-input">
+                    <option value="">选择团队</option>
+                    <template x-for="t in teams" :key="t.id"><option :value="t.id" x-text="t.name"></option></template>
+                </select>
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">成单员工</label>
+                <select x-model="form.employee_id" class="form-input">
+                    <option value="">选择员工</option>
+                    <template x-for="emp in currentEmployees" :key="emp.id"><option :value="emp.id" x-text="emp.name"></option></template>
+                </select>
+            </div>
             <div class="flex space-x-2"><button @click="saveDeal()" class="btn-primary">保存</button><button @click="showModal=false" class="bg-gray-200 px-4 py-2 rounded hover:bg-gray-300">取消</button></div>
         </div>
     </div>
 </div>
 <script>
-function dealsApp() { return { deals: [], showModal: false, sessions:[], leads:[],
-    form: {session_id:'',lead_id:'',customer_name:'',amount:'',deal_time:'',employee:''},
-    async loadData() { const r = await adminFetch('/admin/api/deals'); const j = await r.json(); this.deals = j.data?.items || []; },
-    async loadSessions() {
-        const r = await fetch('/api/sessions?page=1&size=30'); const j = await r.json();
-        this.sessions = (j.data?.items||[]).map(s => ({id:s.id, label:`${s.start_time.slice(0,16)} ~ ${s.end_time.slice(0,16)} (${s.duration_minutes}分钟)`}));
-    },
-    async loadLeads() {
-        if (!this.form.session_id) { this.leads = []; return; }
-        const r = await adminFetch(`/admin/api/leads?session_id=${this.form.session_id}`); const j = await r.json();
-        this.leads = (j.data?.items||[]).map(l => ({id:l.id, label:`${l.nickname} | ${l.city||'-'} | ${l.phone_masked||'-'} | ${l.product_name||'-'} | ${l.lead_time}`}));
-    },
-    async saveDeal() { await adminFetch('/admin/api/deals', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(this.form)}); this.showModal=false; this.loadData(); },
-    async deleteDeal(id) { if(!confirm('确认删除?')) return; await adminFetch(`/admin/api/deals/${id}`, {method:'DELETE'}); this.loadData(); }
-}; }
+function dealsApp() {
+    return {
+        deals: [], total: 0, page: 1, pageSize: 20,
+        showModal: false, sessions:[], leads:[], teams:[],
+        form: {session_id:'',lead_id:'',customer_name:'',amount:'',deal_time:'',employee:'',team_id:'',employee_id:''},
+        stats: [], statsFrom: '', statsTo: '',
+        get currentEmployees() {
+            if (!this.form.team_id) return [];
+            const team = this.teams.find(t => t.id == this.form.team_id);
+            return team ? (team.employees || []) : [];
+        },
+        init() {
+            // 默认统计本月
+            const now = new Date();
+            this.statsFrom = now.getFullYear() + '-' + String(now.getMonth()+1).padStart(2,'0') + '-01';
+            this.statsTo = now.toISOString().slice(0,10);
+        },
+        async loadData() {
+            const r = await adminFetch(`/admin/api/deals?page=${this.page}&size=${this.pageSize}`);
+            const j = await r.json();
+            this.deals = j.data?.items || [];
+            this.total = j.data?.total || 0;
+        },
+        async loadSessions() {
+            const r = await fetch('/api/sessions?page=1&size=50'); const j = await r.json();
+            this.sessions = (j.data?.items||[]).map(s => ({id:s.id, label:`${s.start_time.slice(0,16)} ~ ${s.end_time.slice(0,16)} (${s.duration_minutes}分钟)`}));
+        },
+        async loadLeads() {
+            if (!this.form.session_id) { this.leads = []; return; }
+            const r = await adminFetch(`/admin/api/leads?session_id=${this.form.session_id}`); const j = await r.json();
+            this.leads = (j.data?.items||[]).map(l => ({id:l.id, label:`${l.nickname} | ${l.city||'-'} | ${l.lead_time}`}));
+        },
+        async loadTeams() {
+            const r = await adminFetch('/admin/api/recruit-teams');
+            const j = await r.json();
+            this.teams = j.data || [];
+        },
+        async loadStats() {
+            const params = new URLSearchParams();
+            if (this.statsFrom) params.set('date_from', this.statsFrom);
+            if (this.statsTo) params.set('date_to', this.statsTo);
+            const r = await adminFetch(`/admin/api/employee/stats?${params}`);
+            const j = await r.json();
+            this.stats = j.data || [];
+        },
+        onTeamChange() {
+            if (this.form.employee_id) {
+                const team = this.teams.find(t => t.id == this.form.team_id);
+                if (team && !team.employees?.find(e => e.id == this.form.employee_id)) {
+                    this.form.employee_id = '';
+                }
+            }
+        },
+        async saveDeal() {
+            await adminFetch('/admin/api/deals', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(this.form)});
+            this.showModal=false; this.loadData(); this.loadStats();
+        },
+        async deleteDeal(id) {
+            if(!confirm('确认删除?')) return;
+            await adminFetch(`/admin/api/deals/${id}`, {method:'DELETE'}); this.loadData(); this.loadStats();
+        }
+    };
+}
 </script>
 {% endblock %}

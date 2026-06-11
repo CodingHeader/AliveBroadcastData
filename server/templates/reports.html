@@ -216,7 +216,7 @@ function reportsApp() {
             return map[type] || type;
         },
         formatTime(start, end) {
-            return (start||'').slice(0,16).replace('T',' ') + ' ~ ' + (end||'').slice(11,16);
+            return (start||'').slice(0,16).replace('T',' ') + ' ~ ' + (end||'').slice(0,16).replace('T',' ');
         },
         showMessage(msg, type='success') {
             this.message = msg; this.messageType = type;

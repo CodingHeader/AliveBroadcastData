@@ -59,7 +59,7 @@
         <tbody>
         {% for s in sessions %}
         <tr{% if loop.index is odd %} style="background:#fafbfc;"{% endif %}>
-            <td style="padding:8px 6px;border-bottom:1px solid #f0f0f0;">{{ s.start_time[11:16] }}~{{ s.end_time[11:16] }}</td>
+            <td style="padding:8px 6px;border-bottom:1px solid #f0f0f0;">{{ s.start_time }} ~ {{ s.end_time }}</td>
             <td style="padding:8px 6px;text-align:center;border-bottom:1px solid #f0f0f0;">{{ s.duration_text }}</td>
             <td style="padding:8px 6px;text-align:center;border-bottom:1px solid #f0f0f0;color:#f59e0b;font-weight:600;">¥{{ s.spend }}</td>
             <td style="padding:8px 6px;text-align:center;border-bottom:1px solid #f0f0f0;color:#10b981;font-weight:600;">{{ s.leads }}</td>

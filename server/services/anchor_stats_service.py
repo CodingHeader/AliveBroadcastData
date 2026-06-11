@@ -98,14 +98,17 @@ def get_comprehensive_stats(
     # ===== 预加载场次级别的线索和评论统计 =====
     session_ids = list(set(r.session_id for r in rows))
 
-    # 评论统计（分母：咨询相关评论is_consultation=True）
+    # 评论统计（按session_id查询后，按主播时段过滤）
     comment_rows = db.query(
         Comment.session_id,
-        func.count(Comment.id).label('comment_count'),
-        func.sum(case((Comment.has_lead == True, 1), else_=0)).label('comment_leads'),
-        func.sum(case((Comment.is_consultation == True, 1), else_=0)).label('consultation_count'),
-    ).filter(Comment.session_id.in_(session_ids)).group_by(Comment.session_id).all()
-    comment_map = {cr.session_id: cr for cr in comment_rows}
+        Comment.comment_time,
+        Comment.has_lead,
+        Comment.is_consultation,
+    ).filter(Comment.session_id.in_(session_ids)).all()
+    # 按 session_id 分组
+    comment_by_session = defaultdict(list)
+    for c in comment_rows:
+        comment_by_session[c.session_id].append(c)
 
     # 场次指标 (用于评论数)
     metric_rows = db.query(
@@ -114,13 +117,15 @@ def get_comprehensive_stats(
     ).filter(SessionMetric.session_id.in_(session_ids)).all()
     metric_map = {mr.session_id: mr for mr in metric_rows}
 
-    # 私信统计
+    # 私信统计（按session_id查询后，按主播时段过滤）
     pm_rows = db.query(
         PrivateMessage.session_id,
-        func.count(PrivateMessage.id).label('pm_count'),
-        func.sum(case((PrivateMessage.has_lead == True, 1), else_=0)).label('pm_lead_count'),
-    ).filter(PrivateMessage.session_id.in_(session_ids)).group_by(PrivateMessage.session_id).all()
-    pm_map = {pm.session_id: pm for pm in pm_rows}
+        PrivateMessage.last_message_time,
+        PrivateMessage.has_lead,
+    ).filter(PrivateMessage.session_id.in_(session_ids)).all()
+    pm_by_session = defaultdict(list)
+    for pm in pm_rows:
+        pm_by_session[pm.session_id].append(pm)
 
     # ===== 生成逐场次明细 =====
     daily_detail = []
@@ -143,15 +148,15 @@ def get_comprehensive_stats(
         session_period = _calc_session_period(on_t)
 
         # 线索统计（按时间精确匹配：只取留资时间落在主播时段内的线索）
-        from utils import time_in_range
+        from utils import time_in_range, extract_hhmm
         session_leads = db.query(Lead).filter(Lead.session_id == r.session_id).all()
         on_t = r.on_time or (r.session_start[11:16] if r.session_start else "")
         off_t = r.off_time or (r.session_end[11:16] if r.session_end else "")
         total_leads = ad_leads = natural_leads = effective_leads = 0
         if on_t and off_t and session_leads:
             for l in session_leads:
-                lt = l.lead_time
-                if lt and len(lt) >= 16 and time_in_range(on_t, off_t, lt[11:16]):
+                hhmm = extract_hhmm(l.lead_time)
+                if hhmm and time_in_range(on_t, off_t, hhmm):
                     total_leads += 1
                     if l.ad_account is not None and l.ad_account != '--':
                         ad_leads += 1
@@ -169,12 +174,49 @@ def get_comprehensive_stats(
                 if l.is_valid:
                     effective_leads += 1
 
-        # 评论统计
-        cr = comment_map.get(r.session_id)
-        mr = metric_map.get(r.session_id)
-        comment_count = cr.comment_count if cr else (mr.comment_count if mr else 0)
-        comment_leads = cr.comment_leads if cr else 0
-        consultation_count = cr.consultation_count if cr else 0
+        # 评论统计（按主播时段过滤：只取评论时间落在主播时段内的评论）
+        session_comments = comment_by_session.get(r.session_id, [])
+        comment_count = 0
+        comment_leads = 0
+        consultation_count = 0
+        if on_t and off_t and session_comments:
+            for c in session_comments:
+                ct_hhmm = extract_hhmm(c.comment_time)
+                if ct_hhmm and time_in_range(on_t, off_t, ct_hhmm):
+                    comment_count += 1
+                    if c.has_lead:
+                        comment_leads += 1
+                    if c.is_consultation:
+                        consultation_count += 1
+        else:
+            # 无时段信息时全部计入（降级兼容）
+            for c in session_comments:
+                comment_count += 1
+                if c.has_lead:
+                    comment_leads += 1
+                if c.is_consultation:
+                    consultation_count += 1
+        # 如果没有评论记录但有场次指标，使用指标数据
+        if comment_count == 0:
+            mr = metric_map.get(r.session_id)
+            comment_count = mr.comment_count if mr else 0
+
+        # 私信统计（按主播时段过滤：只取私信时间落在主播时段内的私信）
+        session_pms = pm_by_session.get(r.session_id, [])
+        pm_count = 0
+        pm_lead_count = 0
+        if on_t and off_t and session_pms:
+            for pm in session_pms:
+                pt_hhmm = extract_hhmm(pm.last_message_time)
+                if pt_hhmm and time_in_range(on_t, off_t, pt_hhmm):
+                    pm_count += 1
+                    if pm.has_lead:
+                        pm_lead_count += 1
+        else:
+            for pm in session_pms:
+                pm_count += 1
+                if pm.has_lead:
+                    pm_lead_count += 1
 
         daily_detail.append({
             "date": date_str,
@@ -200,9 +242,9 @@ def get_comprehensive_stats(
             "comment_leads": comment_leads,
             "consultation_count": consultation_count,
             "comment_conversion_rate": round(comment_leads / consultation_count * 100, 1) if consultation_count > 0 else 0,
-            "pm_count": pm_map.get(r.session_id).pm_count if pm_map.get(r.session_id) else 0,
-            "pm_lead_count": pm_map.get(r.session_id).pm_lead_count if pm_map.get(r.session_id) else 0,
-            "pm_conversion_rate": round((pm_map.get(r.session_id).pm_lead_count or 0) / (pm_map.get(r.session_id).pm_count or 1) * 100, 1) if pm_map.get(r.session_id) and pm_map.get(r.session_id).pm_count > 0 else 0,
+            "pm_count": pm_count,
+            "pm_lead_count": pm_lead_count,
+            "pm_conversion_rate": round(pm_lead_count / pm_count * 100, 1) if pm_count > 0 else 0,
         })
 
     # ===== 全场次编号（每天统一编号）=====

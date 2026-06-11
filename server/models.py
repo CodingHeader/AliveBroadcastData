@@ -81,6 +81,7 @@ class Lead(Base):
     __tablename__ = "leads"
     id = Column(Integer, primary_key=True, autoincrement=True)
     session_id = Column(Integer, ForeignKey("sessions.id"), nullable=True)
+    anchor_id = Column(Integer, ForeignKey("anchors.id"), nullable=True)
     lead_time = Column(Text, nullable=False)
     nickname = Column(Text, nullable=False)
     lead_id = Column(Text)
@@ -240,6 +241,21 @@ class ScheduleBinding(Base):
     created_at = Column(Text, server_default="CURRENT_TIMESTAMP")
 
     plan = relationship("SchedulePlan", back_populates="bindings")
+    overtime_slots = relationship("BindingSlot", back_populates="binding", cascade="all, delete-orphan")
+
+class BindingSlot(Base):
+    """排班绑定层级时段（临时加班/调休等，仅影响当日，不污染方案模板）"""
+    __tablename__ = "binding_slots"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    binding_id = Column(Integer, ForeignKey("schedule_bindings.id"), nullable=False)
+    time_slot = Column(Text, nullable=False)          # "22:00-23:00"
+    room_index = Column(Integer, nullable=False, default=1)
+    slot_status = Column(Text, nullable=False, default="on_air_anchor")  # on_air_anchor / off_air / on_air_empty
+    anchor_slot = Column(Integer, nullable=True)       # 主播位（1-based），null表示不指定主播
+    notes = Column(Text, nullable=True)                # 备注，如"临时加班"
+    created_at = Column(Text, server_default="CURRENT_TIMESTAMP")
+
+    binding = relationship("ScheduleBinding", back_populates="overtime_slots")
 
 class AdAccount(Base):
     """直播账户"""
@@ -445,7 +461,7 @@ class RecruitTeam(Base):
     assignee_id = Column(Integer, ForeignKey("recruit_employees.id"), nullable=True, comment="单人模式下指定接收线索的员工")
     created_at = Column(Text, server_default="CURRENT_TIMESTAMP")
 
-    employees = relationship("RecruitEmployee", back_populates="team", cascade="all, delete-orphan")
+    employees = relationship("RecruitEmployee", back_populates="team", cascade="all, delete-orphan", foreign_keys="[RecruitEmployee.team_id]")
     assignments = relationship("ClueAssignment", back_populates="team")
 
 
@@ -461,7 +477,7 @@ class RecruitEmployee(Base):
     is_active = Column(Boolean, default=True)
     created_at = Column(Text, server_default="CURRENT_TIMESTAMP")
 
-    team = relationship("RecruitTeam", back_populates="employees")
+    team = relationship("RecruitTeam", back_populates="employees", foreign_keys="[RecruitEmployee.team_id]")
 
 
 class ClueAssignment(Base):

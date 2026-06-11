@@ -50,6 +50,14 @@ def format_duration_hms(start_time: str, end_time: str) -> str:
     except (ValueError, TypeError):
         return "—"
 
+def extract_hhmm(time_str: str) -> str:
+    """从各种时间格式中提取 HH:MM，支持 '2026-06-09 23:42:00' / '06-09 23:42' / '23:42:00' / '23:42'"""
+    if not time_str:
+        return None
+    parts = time_str.split(' ')
+    last = parts[-1]
+    return last[:5] if len(last) >= 5 else None
+
 def time_in_range(on_time: str, off_time: str, target_time: str) -> bool:
     """判断目标时间 HH:mm 是否在 [on_time, off_time) 区间内（支持跨天）"""
     try:

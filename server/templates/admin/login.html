@@ -10,6 +10,6 @@
     </div>
 </div>
 <script>
-function loginApp() { return { username: '', password: '', error: '', async doLogin() { const resp = await fetch('/admin/api/login', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:this.username,password:this.password})}); const data = await resp.json(); if(data.code===0){localStorage.setItem('admin_token',data.token);location.href='/admin/deals'}else{this.error=data.detail||'登录失败'} } }; }
+function loginApp() { return { username: '', password: '', error: '', async doLogin() { const resp = await fetch('/admin/api/login', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:this.username,password:this.password})}); const data = await resp.json(); if(data.code===0){localStorage.setItem('admin_token',data.token);location.href='/admin/schedule-calendar'}else{this.error=data.detail||'登录失败'} } }; }
 </script>
 {% endblock %}
