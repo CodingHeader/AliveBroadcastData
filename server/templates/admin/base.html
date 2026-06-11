@@ -25,7 +25,7 @@ function sidebarApp() {
         init() {
             this._autoExpand();
             this._saveExpand();
-            window.addEventListener('popstate', (e) => { this.loadContent(location.pathname, true); });
+            window.addEventListener('popstate', (e) => { this._path = location.pathname; this._autoExpand(); this._saveExpand(); this.loadContent(location.pathname, true); });
         },
         _autoExpand() {
             const a = this._path;
@@ -82,8 +82,8 @@ function sidebarApp() {
 }
 </script>
 <style>[x-cloak] { display: none !important; }</style>
-<div class="flex min-h-[calc(100vh-4rem)]" x-data="sidebarApp()" x-init="init()">
-    <aside class="w-60 bg-gradient-to-b from-gray-900 to-gray-800 text-white p-4 flex flex-col sticky top-0 h-screen overflow-y-auto shrink-0">
+<div class="flex min-h-[calc(100vh-4rem)]">
+    <aside x-data="sidebarApp()" x-init="init()" class="w-60 bg-gradient-to-b from-gray-900 to-gray-800 text-white p-4 flex flex-col sticky top-0 h-screen overflow-y-auto shrink-0">
         <div class="text-lg font-bold mb-5 pl-3 flex items-center gap-2">
             <svg class="w-6 h-6 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
             控制台
