@@ -7,6 +7,7 @@
         <select x-model="city" class="form-input max-w-xs text-sm py-1.5"><option value="">全部城市</option></select>
         <button @click="loadData()" class="btn-primary text-sm py-1.5">查询</button>
         <a href="/api/export/leads" class="btn-success text-sm py-1.5 no-underline">导出Excel</a>
+        <a href="/clue-board" target="_blank" class="bg-purple-600 text-white px-4 py-1.5 rounded text-sm no-underline hover:bg-purple-700">📋 线索领取看板</a>
     </div>
     <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div class="bg-white rounded-lg shadow-sm p-5"><div id="sourcePie" style="height:300px;"></div></div>
