@@ -1,0 +1,257 @@
+{% extends "admin/base.html" %}
+{% block admin_content %}
+<div x-data="anchorIncomeApp()" x-init="init()" class="space-y-4">
+    <div class="flex justify-between items-center flex-wrap gap-2">
+        <h2 class="text-xl font-bold">直播详情</h2>
+        <div class="flex items-center gap-2">
+            <select x-model="filterAnchorId" @change="loadData()" class="form-select text-sm border rounded-lg px-3 py-1.5">
+                <option value="">全部主播</option>
+                <template x-for="a in anchors" :key="a.id">
+                    <option :value="a.id" x-text="a.name"></option>
+                </template>
+            </select>
+            <input type="date" x-model="dateFrom" class="form-input text-sm" @change="loadData()">
+            <span class="text-gray-500">至</span>
+            <input type="date" x-model="dateTo" class="form-input text-sm" @change="loadData()">
+            <button @click="exportExcel()" class="btn-primary text-sm">导出Excel</button>
+        </div>
+    </div>
+
+    <!-- 排班绑定提示 -->
+    <div x-show="unboundDates.length > 0" class="bg-yellow-50 border border-yellow-200 text-yellow-800 rounded-lg p-3 text-sm">
+        <strong>⚠ 排班提醒：</strong>
+        <template x-for="d in unboundDates" :key="d">
+            <span class="mr-3"><span x-text="d"></span> 未绑定主播</span>
+        </template>
+        — 请先在「排班日历」中为这些日期绑定主播
+    </div>
+
+    <!-- 汇总卡片 -->
+    <div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-3">
+        <div class="bg-white p-3 rounded-lg shadow-sm border-l-4 border-l-blue-500">
+            <div class="text-xs text-gray-500">总时长</div>
+            <div class="text-lg font-bold" x-text="summary.total_hours?.toFixed(1) + 'h'"></div>
+        </div>
+        <div class="bg-white p-3 rounded-lg shadow-sm border-l-4 border-l-purple-500">
+            <div class="text-xs text-gray-500">广告流留资</div>
+            <div class="text-lg font-bold text-purple-600" x-text="summary.total_ad_leads"></div>
+        </div>
+        <div class="bg-white p-3 rounded-lg shadow-sm border-l-4 border-l-orange-500">
+            <div class="text-xs text-gray-500">自然流留资</div>
+            <div class="text-lg font-bold text-orange-600" x-text="summary.total_natural_leads"></div>
+        </div>
+        <div class="bg-white p-3 rounded-lg shadow-sm border-l-4 border-l-cyan-500">
+            <div class="text-xs text-gray-500">总留资</div>
+            <div class="text-lg font-bold text-cyan-600" x-text="summary.total_leads"></div>
+        </div>
+        <div class="bg-white p-3 rounded-lg shadow-sm border-l-4 border-l-pink-500">
+            <div class="text-xs text-gray-500">评论数</div>
+            <div class="text-lg font-bold text-pink-600" x-text="summary.total_comments"></div>
+        </div>
+        <div class="bg-white p-3 rounded-lg shadow-sm border-l-4 border-l-red-500">
+            <div class="text-xs text-gray-500">评论获客</div>
+            <div class="text-lg font-bold text-red-600" x-text="summary.total_comment_leads"></div>
+        </div>
+        <div class="bg-white p-3 rounded-lg shadow-sm border-l-4 border-l-fuchsia-500">
+            <div class="text-xs text-gray-500">私信数</div>
+            <div class="text-lg font-bold text-fuchsia-600" x-text="summary.total_pm"></div>
+        </div>
+        <div class="bg-white p-3 rounded-lg shadow-sm border-l-4 border-l-rose-500">
+            <div class="text-xs text-gray-500">私信获客</div>
+            <div class="text-lg font-bold text-rose-600" x-text="summary.total_pm_leads"></div>
+        </div>
+    </div>
+
+    <!-- 主播维度汇总 -->
+    <div class="bg-white p-4 rounded-lg shadow-sm">
+        <h3 class="font-bold mb-3">主播汇总（按月）</h3>
+        <div class="overflow-x-auto">
+            <table class="data-table text-sm">
+                <thead>
+                    <tr>
+                        <th>主播</th>
+                        <th>总时长(h)</th>
+                        <th>广告流留资</th>
+                        <th>自然流留资</th>
+                        <th>总留资</th>
+                        <th>评论获客</th>
+                        <th>获客率</th>
+                        <th>私信数</th>
+                        <th>私信获客</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <template x-for="(stat, idx) in anchorSummary" :key="idx">
+                        <tr class="border-t">
+                            <td class="font-medium" x-text="stat.anchor_name"></td>
+                            <td x-text="stat.total_hours?.toFixed(1)"></td>
+                            <td class="text-purple-600" x-text="stat.ad_leads"></td>
+                            <td class="text-orange-600" x-text="stat.natural_leads"></td>
+                            <td class="text-cyan-600" x-text="stat.total_leads"></td>
+                            <td class="text-red-600" x-text="stat.comment_leads"></td>
+                            <td x-text="stat.total_leads > 0 ? (stat.comment_leads / stat.total_leads * 100).toFixed(1) + '%' : '-'"></td>
+                            <td class="text-fuchsia-600" x-text="stat.pm_count"></td>
+                            <td class="text-rose-600" x-text="stat.pm_lead_count"></td>
+                        </tr>
+                    </template>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- 详细数据表格 -->
+    <div class="bg-white p-4 rounded-lg shadow-sm">
+        <h3 class="font-bold mb-3">详细数据</h3>
+        <div class="overflow-x-auto">
+            <table class="data-table text-sm">
+                <thead>
+                    <tr>
+                        <th>日期</th>
+                        <th>主播</th>
+                        <th>直播场次</th>
+                        <th>上播时间</th>
+                        <th>下播时间</th>
+                        <th>主播场次</th>
+                        <th>关联场次</th>
+                        <th>时长(h)</th>
+                        <th>广告流留资</th>
+                        <th>自然流留资</th>
+                        <th>总留资</th>
+                        <th>评论数</th>
+                        <th>评论获客</th>
+                        <th>获客率</th>
+                        <th>私信数</th>
+                        <th>私信获客</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <template x-for="(row, idx) in statsData" :key="idx">
+                        <tr class="border-t hover:bg-gray-50">
+                            <td x-text="row.date"></td>
+                            <td class="font-medium" x-text="row.anchor_name || '未绑定'" :class="row.anchor_name ? '' : 'text-red-600 font-bold'"></td>
+                            <td x-text="'第' + row.session_order + '场'"></td>
+                            <td x-text="row.on_time"></td>
+                            <td x-text="row.off_time"></td>
+                            <td class="text-center" x-text="row.anchor_order"></td>
+                            <td>
+                                <span class="px-2 py-0.5 rounded text-xs"
+                                    :class="{
+                                        'bg-yellow-100 text-yellow-700': row.session_period === '上午场',
+                                        'bg-blue-100 text-blue-700': row.session_period === '下午场',
+                                        'bg-purple-100 text-purple-700': row.session_period === '晚间场'
+                                    }"
+                                    x-text="row.session_period"></span>
+                            </td>
+                            <td x-text="row.duration_hours?.toFixed(1)"></td>
+                            <td class="text-purple-600" x-text="row.ad_lead_count"></td>
+                            <td class="text-orange-600" x-text="row.natural_lead_count"></td>
+                            <td class="text-cyan-600 font-bold" x-text="row.total_lead_count"></td>
+                            <td x-text="row.comment_count"></td>
+                            <td class="text-red-600" x-text="row.comment_lead_count"></td>
+                            <td x-text="row.total_lead_count > 0 ? (row.comment_lead_count / row.total_lead_count * 100).toFixed(1) + '%' : '-'"></td>
+                            <td class="text-fuchsia-600" x-text="row.pm_count"></td>
+                            <td class="text-rose-600" x-text="row.pm_lead_count"></td>
+                        </tr>
+                    </template>
+                </tbody>
+            </table>
+        </div>
+        <div x-show="statsData.length === 0" class="text-center py-8 text-gray-400">
+            暂无数据，请先配置主播排班
+        </div>
+    </div>
+</div>
+
+<script>
+function anchorIncomeApp() {
+    return {
+        statsData: [],
+        summary: {},
+        anchorSummary: [],
+        anchors: [],
+        filterAnchorId: '',
+        dateFrom: new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().split('T')[0],
+        dateTo: new Date().toISOString().split('T')[0],
+        unboundDates: [], // 存在未绑定主播的日期列表
+
+        async init() {
+            const token = localStorage.getItem('admin_token');
+            const r = await fetch('/admin/api/anchors', { headers: { 'Authorization': 'Bearer ' + token } });
+            const j = await r.json();
+            this.anchors = j.data || [];
+            this.loadData();
+        },
+
+        async loadData() {
+            const token = localStorage.getItem('admin_token');
+            const params = new URLSearchParams();
+            if (this.dateFrom) params.append('date_from', this.dateFrom);
+            if (this.dateTo) params.append('date_to', this.dateTo);
+            if (this.filterAnchorId) params.append('anchor_id', this.filterAnchorId);
+            
+            try {
+                const resp = await fetch(`/admin/api/anchor-income-stats?${params}`, {
+                    headers: { 'Authorization': 'Bearer ' + token }
+                });
+                const json = await resp.json();
+                if (json.code === 0) {
+                    this.statsData = json.data || [];
+                    this.summary = json.summary || {};
+                    this.calcAnchorSummary();
+                    this.calcUnboundDates();
+                }
+            } catch (e) {
+                console.error('加载失败:', e);
+            }
+        },
+
+        calcUnboundDates() {
+            // 检查统计数据中是否有日期存在未绑定主播的场次
+            const noAnchorDates = {};
+            for (const row of this.statsData) {
+                if (!row.anchor_name) {
+                    noAnchorDates[row.date] = true;
+                }
+            }
+            this.unboundDates = Object.keys(noAnchorDates).sort();
+        },
+
+        calcAnchorSummary() {
+            const map = {};
+            for (const row of this.statsData) {
+                if (!map[row.anchor_name]) {
+                    map[row.anchor_name] = {
+                        anchor_name: row.anchor_name,
+                        total_hours: 0,
+                        ad_leads: 0,
+                        natural_leads: 0,
+                        total_leads: 0,
+                        comment_leads: 0,
+                        pm_count: 0,
+                        pm_lead_count: 0,
+                    };
+                }
+                const s = map[row.anchor_name];
+                s.total_hours += row.duration_hours || 0;
+                s.ad_leads += row.ad_lead_count || 0;
+                s.natural_leads += row.natural_lead_count || 0;
+                s.total_leads += row.total_lead_count || 0;
+                s.comment_leads += row.comment_lead_count || 0;
+                s.pm_count += row.pm_count || 0;
+                s.pm_lead_count += row.pm_lead_count || 0;
+            }
+            this.anchorSummary = Object.values(map);
+        },
+
+        exportExcel() {
+            const token = localStorage.getItem('admin_token');
+            const params = new URLSearchParams();
+            if (this.dateFrom) params.append('date_from', this.dateFrom);
+            if (this.dateTo) params.append('date_to', this.dateTo);
+            params.append('format', 'xlsx');
+            window.open(`/admin/api/anchor-income-stats/export?${params}&token=${token}`, '_blank');
+        }
+    };
+}
+</script>
+{% endblock %}

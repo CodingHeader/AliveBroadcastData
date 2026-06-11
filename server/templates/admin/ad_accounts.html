@@ -1,0 +1,80 @@
+{% extends "admin/base.html" %}
+{% block admin_content %}
+<div x-data="adAccountsApp()" x-init="loadData()" class="space-y-4">
+    <div class="flex justify-between items-center">
+        <h2 class="text-xl font-bold">直播账户管理</h2>
+        <div class="flex space-x-2 flex-wrap gap-y-2">
+            <input x-model="newName" placeholder="账户名称" class="form-input max-w-xs">
+            <input x-model="newMerchantId" placeholder="抖音来客商家ID" class="form-input max-w-xs">
+            <input x-model="newNotes" placeholder="备注" class="form-input max-w-xs">
+            <button @click="addAccount()" class="btn-primary">新增</button>
+        </div>
+    </div>
+    <div class="bg-white rounded-lg shadow-sm overflow-x-auto">
+        <table class="data-table">
+            <thead><tr><th>ID</th><th>账户名称</th><th>抖音来客商家ID</th><th>备注</th><th>操作</th></tr></thead>
+            <tbody>
+                <template x-for="a in accounts" :key="a.id">
+                    <tr>
+                        <td x-text="a.id"></td>
+                        <td>
+                            <span x-show="!a._editing" x-text="a.account_name"></span>
+                            <input x-show="a._editing" x-model="a.account_name" class="form-input w-40 py-1">
+                        </td>
+                        <td>
+                            <span x-show="!a._editing" x-text="a.merchant_id || '-'" class="font-mono text-sm"></span>
+                            <input x-show="a._editing" x-model="a.merchant_id" class="form-input w-40 py-1 font-mono" placeholder="抖音来客商家ID">
+                        </td>
+                        <td>
+                            <span x-show="!a._editing" x-text="a.notes || '-'"></span>
+                            <input x-show="a._editing" x-model="a.notes" class="form-input w-40 py-1">
+                        </td>
+                        <td class="space-x-2">
+                            <template x-if="!a._editing">
+                                <button @click="a._editing=true" class="text-blue-500 hover:text-blue-700 text-sm">编辑</button>
+                            </template>
+                            <template x-if="a._editing">
+                                <button @click="saveAccount(a)" class="text-green-500 hover:text-green-700 text-sm">保存</button>
+                            </template>
+                            <button @click="deleteAccount(a.id)" class="text-red-500 hover:text-red-700 text-sm">删除</button>
+                        </td>
+                    </tr>
+                </template>
+            </tbody>
+        </table>
+    </div>
+</div>
+<script>
+function adAccountsApp() { return { accounts: [], newName: '', newMerchantId: '', newNotes: '', _loaded: false,
+    async loadData() {
+        try {
+            const r = await adminFetch('/admin/api/ad-accounts'); const j = await r.json();
+            this.accounts = (j.data||[]).map(a => ({...a, _editing: false}));
+            this._loaded = true;
+        } catch(e) {
+            console.error('加载直播账户失败:', e);
+        }
+    },
+    async addAccount() {
+        if(!this.newName) { alert('请填写账户名称'); return; }
+        const r = await adminFetch('/admin/api/ad-accounts', {method:'POST',headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({account_name:this.newName,merchant_id:this.newMerchantId,notes:this.newNotes})});
+        const j = await r.json();
+        if(j.code===0) { this.newName=''; this.newMerchantId=''; this.newNotes=''; this.loadData(); }
+        else { alert(j.message||'新增失败'); }
+    },
+    async saveAccount(a) {
+        const r = await adminFetch(`/admin/api/ad-accounts/${a.id}`, {method:'PUT',headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({account_name:a.account_name,merchant_id:a.merchant_id,notes:a.notes})});
+        const j = await r.json();
+        if(j.code===0) { a._editing=false; } else { alert(j.message||'保存失败'); }
+    },
+    async deleteAccount(id) {
+        if(!confirm('确认删除？')) return;
+        const r = await adminFetch(`/admin/api/ad-accounts/${id}`, {method:'DELETE'});
+        const j = await r.json();
+        if(j.code===0) this.loadData(); else alert(j.message||'删除失败');
+    }
+}; }
+</script>
+{% endblock %}
