@@ -281,7 +281,7 @@ def anchor_income_stats(date_from: str = None, date_to: str = None, anchor_id: i
 
         lead_stats = db.query(
             func.count(Lead.id).label('total_leads'),
-            func.sum(case((Lead.ad_account != None, 1), else_=0)).label('ad_leads'),
+            func.sum(case(((Lead.ad_account != None) & (Lead.ad_account != '--'), 1), else_=0)).label('ad_leads'),
             func.sum(case(((Lead.ad_account == None) | (Lead.ad_account == '--'), 1), else_=0)).label('natural_leads')
         ).filter(Lead.session_id == row.session_id).first()
 
