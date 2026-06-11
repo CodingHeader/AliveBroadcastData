@@ -1,0 +1,521 @@
+{% extends "admin/base.html" %}
+{% block admin_content %}
+<div x-data="anchorSalaryApp()" x-init="init()" class="space-y-4">
+
+    <!-- ===== 第一行：计算参数 ===== -->
+    <div class="bg-white p-4 rounded-lg shadow-sm">
+        <div class="flex items-end gap-3 flex-wrap">
+            <div>
+                <label class="block text-xs text-gray-500 mb-1">底薪 (元/小时)</label>
+                <input type="number" x-model="params.baseRate" class="form-input text-sm w-24" min="0" step="1">
+            </div>
+            <div>
+                <label class="block text-xs text-gray-500 mb-1">线索 (元/条)</label>
+                <input type="number" x-model="params.leadCommission" class="form-input text-sm w-24" min="0" step="1">
+            </div>
+            <div>
+                <label class="block text-xs text-gray-500 mb-1">广告流线索 (元/条)</label>
+                <input type="number" x-model="params.adCommission" class="form-input text-sm w-28" min="0" step="1">
+            </div>
+            <div>
+                <label class="block text-xs text-gray-500 mb-1">自然流线索 (元/条)</label>
+                <input type="number" x-model="params.naturalCommission" class="form-input text-sm w-28" min="0" step="1">
+            </div>
+            <button @click="calculate()" class="btn-primary px-6">计算</button>
+            <button @click="exportExcel()" class="bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700 text-sm">导出Excel</button>
+        </div>
+    </div>
+
+    <!-- ===== 第二行：筛选栏 ===== -->
+    <div class="bg-white p-3 rounded-lg shadow-sm flex items-center gap-3 flex-nowrap overflow-x-auto">
+        <div class="flex items-center gap-1 flex-shrink-0">
+            <label class="text-xs text-gray-500">开始日期</label>
+            <input type="date" x-model="filters.date_from" @change="loadData()" class="form-input text-xs py-1 px-2 w-[140px]">
+        </div>
+        <div class="flex items-center gap-1 flex-shrink-0">
+            <label class="text-xs text-gray-500">结束日期</label>
+            <input type="date" x-model="filters.date_to" @change="loadData()" class="form-input text-xs py-1 px-2 w-[140px]">
+        </div>
+        <div class="flex items-center gap-1 flex-shrink-0">
+            <label class="text-xs text-gray-500">主播</label>
+            <select x-model="selectedAnchor" @change="onAnchorChange()" class="form-input text-xs py-1 px-2 min-w-[120px]">
+                <option value="">全部主播</option>
+                <template x-for="a in anchors" :key="a.id">
+                    <option :value="a.name" x-text="a.name"></option>
+                </template>
+            </select>
+        </div>
+        <div x-show="loading" class="text-sm text-blue-500">
+            <svg class="animate-spin h-4 w-4 inline mr-1" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+            计算中...
+        </div>
+    </div>
+
+    <!-- ===== 整体概览卡片 ===== -->
+    <div x-show="overall.total_days > 0" class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3">
+        <div class="bg-white rounded-lg shadow-sm p-3 text-center">
+            <div class="text-xs text-gray-500">主播数</div>
+            <div class="text-xl font-bold text-blue-600" x-text="overall.anchor_count"></div>
+        </div>
+        <div class="bg-white rounded-lg shadow-sm p-3 text-center">
+            <div class="text-xs text-gray-500">总直播天数</div>
+            <div class="text-xl font-bold text-blue-600" x-text="overall.total_days"></div>
+        </div>
+        <div class="bg-white rounded-lg shadow-sm p-3 text-center">
+            <div class="text-xs text-gray-500">总直播时长</div>
+            <div class="text-xl font-bold text-purple-600" x-text="formatHours(overall.total_hours)"></div>
+        </div>
+        <div class="bg-white rounded-lg shadow-sm p-3 text-center">
+            <div class="text-xs text-gray-500">总留资数</div>
+            <div class="text-xl font-bold text-orange-600" x-text="overall.total_leads"></div>
+        </div>
+        <div class="bg-white rounded-lg shadow-sm p-3 text-center">
+            <div class="text-xs text-gray-500">广告流留资</div>
+            <div class="text-xl font-bold text-purple-600" x-text="overall.total_ad_leads"></div>
+        </div>
+        <div class="bg-white rounded-lg shadow-sm p-3 text-center">
+            <div class="text-xs text-gray-500">自然流留资</div>
+            <div class="text-xl font-bold text-green-600" x-text="overall.total_natural_leads"></div>
+        </div>
+        <div class="bg-white rounded-lg shadow-sm p-3 text-center">
+            <div class="text-xs text-gray-500">评论总数</div>
+            <div class="text-xl font-bold text-teal-600" x-text="overall.total_comments"></div>
+        </div>
+    </div>
+    <div x-show="overall.total_days > 0" class="grid grid-cols-2 md:grid-cols-3 gap-3 mt-3">
+        <div class="bg-white rounded-lg shadow-sm p-3 text-center">
+            <div class="text-xs text-gray-500">评论获客</div>
+            <div class="text-xl font-bold text-cyan-600" x-text="overall.total_comment_leads"></div>
+        </div>
+        <div class="bg-white rounded-lg shadow-sm p-3 text-center">
+            <div class="text-xs text-gray-500">私信总数</div>
+            <div class="text-xl font-bold text-pink-600" x-text="overall.total_pm"></div>
+        </div>
+        <div class="bg-white rounded-lg shadow-sm p-3 text-center">
+            <div class="text-xs text-gray-500">私信获客</div>
+            <div class="text-xl font-bold text-rose-600" x-text="overall.total_pm_leads"></div>
+        </div>
+    </div>
+
+    <!-- ===== 主播月薪概览 ===== -->
+    <div x-show="summary.length > 0" class="bg-white p-4 rounded-lg shadow-sm">
+        <h3 class="font-bold text-lg mb-3">主播月薪概览</h3>
+        <div class="overflow-x-auto">
+            <table class="data-table text-sm w-full">
+                <thead>
+                    <tr>
+                        <th>主播</th>
+                        <th>类型</th>
+                        <th>直播时长</th>
+                        <th>上播天数</th>
+                        <th>线索数</th>
+                        <th>广告流</th>
+                        <th>自然流</th>
+                        <th>评论数</th>
+                        <th>咨询评论</th>
+                        <th>评论获客</th>
+                        <th>咨询获客率</th>
+                        <th class="text-pink-600">私信数</th>
+                        <th class="text-rose-600">私信获客</th>
+                        <th class="text-green-700">上播收入</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <template x-for="s in summary" :key="s.anchor_name">
+                        <tr class="border-t hover:bg-gray-50"
+                            :class="{'bg-blue-50': selectedAnchor === s.anchor_name}">
+                            <td class="font-medium" x-text="s.anchor_name"></td>
+                            <td>
+                                <span x-show="s.is_parttime" class="text-xs bg-yellow-100 text-yellow-700 px-1.5 py-0.5 rounded">兼职</span>
+                                <span x-show="!s.is_parttime" class="text-xs bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded">全职</span>
+                            </td>
+                            <td x-text="formatHours(s.total_hours)"></td>
+                            <td x-text="s.days"></td>
+                            <td x-text="s.total_leads"></td>
+                            <td class="text-purple-600" x-text="s.ad_leads"></td>
+                            <td class="text-green-600" x-text="s.natural_leads"></td>
+                            <td x-text="s.comment_count"></td>
+                            <td x-text="s.consultation_count || s.comment_count"></td>
+                            <td x-text="s.comment_leads"></td>
+                            <td x-text="(s.comment_conversion_rate || 0) + '%'"></td>
+                            <td class="text-pink-600" x-text="s.pm_count"></td>
+                            <td class="text-rose-600" x-text="s.pm_lead_count"></td>
+                            <td class="text-green-600 font-bold" x-text="'¥' + calcBase(s).toFixed(0)"></td>
+                            <td>
+                                <button @click="showDetail(s.anchor_name)" class="text-blue-500 hover:text-blue-700 text-xs underline">详情</button>
+                            </td>
+                        </tr>
+                    </template>
+                </tbody>
+                <tfoot>
+                    <tr class="border-t-2 bg-gray-50 font-bold">
+                        <td>合计</td>
+                        <td></td>
+                        <td x-text="formatHours(summary.reduce((a,s)=>a+s.total_hours,0))"></td>
+                        <td></td>
+                        <td x-text="summary.reduce((a,s)=>a+s.total_leads,0)"></td>
+                        <td class="text-purple-600" x-text="summary.reduce((a,s)=>a+s.ad_leads,0)"></td>
+                        <td class="text-green-600" x-text="summary.reduce((a,s)=>a+s.natural_leads,0)"></td>
+                        <td x-text="summary.reduce((a,s)=>a+s.comment_count,0)"></td>
+                        <td x-text="summary.reduce((a,s)=>a+(s.consultation_count||s.comment_count),0)"></td>
+                        <td x-text="summary.reduce((a,s)=>a+s.comment_leads,0)"></td>
+                        <td x-text="summary.reduce((a,s)=>a+(s.consultation_count||s.comment_count),0) > 0 ? (summary.reduce((a,s)=>a+s.comment_leads,0) / summary.reduce((a,s)=>a+(s.consultation_count||s.comment_count),0) * 100).toFixed(1) + '%' : '0%'"></td>
+                        <td></td>
+                        <td class="text-pink-600" x-text="summary.reduce((a,s)=>a+s.pm_count,0)"></td>
+                        <td class="text-rose-600" x-text="summary.reduce((a,s)=>a+s.pm_lead_count,0)"></td>
+                        <td class="text-green-600 font-bold" x-text="'¥' + totalBaseSalary().toFixed(0)"></td>
+                        <td></td>
+                    </tr>
+                </tfoot>
+            </table>
+        </div>
+    </div>
+
+    <!-- ===== 单主播薪酬明细 ===== -->
+    <div x-show="selectedAnchor && detailRows.length > 0" class="bg-white p-4 rounded-lg shadow-sm">
+        <div class="flex items-center justify-between mb-3">
+            <h3 class="font-bold text-lg">
+                <span x-text="selectedAnchor"></span>
+                <span class="text-gray-500 text-sm ml-2">薪酬明细</span>
+            </h3>
+            <div class="flex items-center gap-3">
+                <span class="text-xs text-gray-500">共 <span x-text="detailRows.length" class="font-medium"></span> 行</span>
+                <button @click="exportDetailExcel()" class="bg-green-600 text-white px-3 py-1 rounded hover:bg-green-700 text-xs">导出明细</button>
+                <button @click="selectedAnchor=''" class="text-gray-400 hover:text-gray-600 text-sm">✕ 关闭</button>
+            </div>
+        </div>
+        <div class="overflow-x-auto">
+            <table class="data-table text-xs w-full">
+                <thead>
+                    <tr>
+                        <th class="whitespace-nowrap">日期</th>
+                        <th class="whitespace-nowrap">时段</th>
+                        <th class="whitespace-nowrap">时长</th>
+                        <th class="whitespace-nowrap">线索数</th>
+                        <th class="whitespace-nowrap">广告流</th>
+                        <th class="whitespace-nowrap">自然流</th>
+                        <th class="whitespace-nowrap text-green-700">上播收入</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <template x-for="d in detailRows" :key="d.date + '_' + d.anchor_name">
+                        <tr class="border-t hover:bg-gray-50">
+                            <td class="whitespace-nowrap font-medium" x-text="d.date"></td>
+                            <td class="whitespace-nowrap text-xs text-gray-500" x-text="d.periods_display || '-'"></td>
+                            <td x-text="formatDuration(d.duration_minutes)"></td>
+                            <td class="text-center" x-text="d.total_leads"></td>
+                            <td class="text-center text-purple-600" x-text="d.ad_leads"></td>
+                            <td class="text-center text-green-600" x-text="d.natural_leads"></td>
+                            <td class="text-green-600 text-center font-bold" x-text="'¥' + calcDayIncome(d).toFixed(0)"></td>
+                        </tr>
+                    </template>
+                </tbody>
+                <tfoot>
+                    <tr class="border-t-2 bg-gray-50 font-bold">
+                        <td>合计</td>
+                        <td x-text="formatDuration(detailRows.reduce((a,d)=>a + (d.duration_minutes||0), 0))"></td>
+                        <td class="text-center" x-text="detailRows.reduce((a,d)=>a + (d.total_leads||0), 0)"></td>
+                        <td class="text-center text-purple-600" x-text="detailRows.reduce((a,d)=>a + (d.ad_leads||0), 0)"></td>
+                        <td class="text-center text-green-600" x-text="detailRows.reduce((a,d)=>a + (d.natural_leads||0), 0)"></td>
+                        <td class="text-green-600 text-center" x-text="'¥' + detailRows.reduce((a,d)=>a + calcDayIncome(d), 0).toFixed(0)"></td>
+                    </tr>
+                </tfoot>
+            </table>
+        </div>
+    </div>
+
+    <!-- 无数据提示 -->
+    <div x-show="!loaded" class="bg-white p-8 rounded-lg shadow-sm text-center text-gray-400">
+        <p class="text-lg mb-2">点击上方「计算」按钮查看主播月薪数据</p>
+        <p class="text-sm">可调整底薪和提成单价后重新计算。支持任意日期范围的排班补录和统计。</p>
+    </div>
+
+    <div x-show="loaded && summary.length === 0" class="bg-white p-8 rounded-lg shadow-sm text-center text-gray-400">
+        <p class="text-lg mb-2">当前日期范围暂无排班数据</p>
+        <p class="text-sm">请先在「排班日历」中为该日期范围配置排班方案，确保主播已添加到排班系统中。</p>
+    </div>
+
+</div>
+
+<script>
+function anchorSalaryApp() {
+    return {
+        params: { baseRate: 40, leadCommission: 0, adCommission: 0, naturalCommission: 0 },
+        filters: { date_from: '', date_to: '' },
+        anchors: [],
+        summary: [],
+        dailyAggregated: [],
+        dailyDetail: [],
+        overall: { total_days: 0, total_hours: 0, total_leads: 0, total_ad_leads: 0, total_natural_leads: 0, total_comments: 0, total_comment_leads: 0, total_pm: 0, total_pm_leads: 0, anchor_count: 0 },
+        selectedAnchor: '',
+        loaded: false,
+        loading: false,
+        allData: null, // 缓存全部数据
+        boundDates: [], // 有排班绑定的日期列表
+        unboundDates: [], // 无排班绑定的日期列表
+
+        get detailRows() {
+            if (!this.selectedAnchor || !this.dailyAggregated) return [];
+            return this.dailyAggregated.filter(d => d.anchor_name === this.selectedAnchor);
+        },
+
+        async init() {
+            // 设置默认日期范围：本月1号→最后一天
+            this.filters.date_from = this._getFirstDayOfMonth();
+            this.filters.date_to = this._getLastDayOfMonth();
+            await this.loadBindings();
+            try {
+                const resp = await fetch('/admin/api/anchors', {
+                    headers: { 'Authorization': 'Bearer ' + localStorage.getItem('admin_token') }
+                });
+                const json = await resp.json();
+                this.anchors = json.data || [];
+                if (json.data && json.data.length > 0) {
+                    // 保存最新的参数
+                    this.params.baseRate = parseFloat(json.data.salary_base_rate) || 40;
+                }
+            } catch (e) { console.error('加载主播列表失败', e); }
+            // 自动预加载数据
+            await this.calculate();
+        },
+
+        async loadData() {
+            const params = new URLSearchParams({
+                date_from: this.filters.date_from,
+                date_to: this.filters.date_to
+            });
+            if (this.selectedAnchor) {
+                params.set('anchor_name', this.selectedAnchor);
+            }
+
+            const resp = await fetch(`/admin/api/anchor-stats/comprehensive?${params}`, {
+                headers: { 'Authorization': 'Bearer ' + localStorage.getItem('admin_token') }
+            });
+            const json = await resp.json();
+            if (json.code === 0) {
+                this.allData = json;
+                this.summary = json.anchor_summary || [];
+                this.dailyAggregated = json.daily_aggregated || [];
+                this.dailyDetail = json.daily_detail || [];
+                this.overall = json.overall_summary || {};
+                this.calcUnboundDates();
+            }
+        },
+
+        isBoundDate(dateStr) {
+            return this.boundDates.includes(dateStr);
+        },
+
+        async loadBindings() {
+            try {
+                const token = localStorage.getItem('admin_token');
+                if (!this.filters.date_from) return;
+                const [year, month] = this.filters.date_from.split('-');
+                const resp = await fetch(`/admin/api/schedule/bindings?year=${year}&month=${month}`, {
+                    headers: { 'Authorization': 'Bearer ' + token }
+                });
+                const json = await resp.json();
+                if (json.code === 0 && json.data) {
+                    this.boundDates = json.data
+                        .filter(b => b.anchor_mapping && typeof b.anchor_mapping === 'object' && Object.keys(b.anchor_mapping).length > 0)
+                        .map(b => b.date);
+                }
+            } catch (e) {
+                console.error('加载排班绑定失败:', e);
+            }
+        },
+
+        calcUnboundDates() {
+            const allDates = new Set();
+            for (const d of this.dailyDetail) allDates.add(d.date);
+            for (const d of this.dailyAggregated) allDates.add(d.date);
+            this.unboundDates = [...allDates].filter(d => !this.boundDates.includes(d));
+        },
+
+        async calcWithParams() {
+            const body = {
+                date_from: this.filters.date_from,
+                date_to: this.filters.date_to,
+                base_rate: this.params.baseRate || 40,
+                lead_commission: this.params.leadCommission || 0,
+                ad_commission: this.params.adCommission || 0,
+                natural_commission: this.params.naturalCommission || 0,
+            };
+            if (this.selectedAnchor) body.anchor_name = this.selectedAnchor;
+
+            await this.loadBindings();
+
+            const resp = await fetch('/admin/api/anchor-stats/salary-calc', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': 'Bearer ' + localStorage.getItem('admin_token')
+                },
+                body: JSON.stringify(body)
+            });
+            const json = await resp.json();
+            if (json.code === 0) {
+                this.allData = json;
+                this.summary = json.anchor_summary || [];
+                this.dailyAggregated = json.daily_aggregated || [];
+                this.dailyDetail = json.daily_detail || [];
+                this.overall = json.overall_summary || {};
+                this.calcUnboundDates();
+            }
+        },
+
+        async calculate() {
+            this.loaded = true;
+            this.loading = true;
+            try {
+                await this.calcWithParams();
+            } catch (e) {
+                // 降级到 get 请求
+                await this.loadData();
+            }
+            this.loading = false;
+        },
+
+        showDetail(name) {
+            this.selectedAnchor = name;
+            // 默认切换到该主播过滤
+        },
+
+        onAnchorChange() {
+            if (this.loaded) {
+                this.calculate();
+            }
+        },
+
+        formatDuration(minutes) {
+            const h = Math.floor(minutes / 60);
+            const m = minutes % 60;
+            return h + '时' + m + '分';
+        },
+
+        formatHours(hours) {
+            if (!hours) return '0时0分';
+            const h = Math.floor(hours);
+            const m = Math.round((hours - h) * 60);
+            return h + '时' + (m > 0 ? m + '分' : '0分');
+        },
+
+        formatSessionTime(d) {
+            if (d.session_start && d.session_end) {
+                const ss = d.session_start.length >= 16 ? d.session_start.substr(11, 5) : '';
+                const se = d.session_end.length >= 16 ? d.session_end.substr(11, 5) : '';
+                return ss + ' - ' + se;
+            }
+            return '-';
+        },
+
+        // 上播收入 = 时薪 + 线索提成 + 广告流提成 + 自然流提成
+        calcBase(s) {
+            return (s.total_hours || 0) * (this.params.baseRate || 0)
+                 + (s.total_leads || 0) * (this.params.leadCommission || 0)
+                 + (s.ad_leads || 0) * (this.params.adCommission || 0)
+                 + (s.natural_leads || 0) * (this.params.naturalCommission || 0);
+        },
+
+        calcDayIncome(d) {
+            return (d.duration_minutes || 0) / 60 * (this.params.baseRate || 0)
+                 + (d.total_leads || 0) * (this.params.leadCommission || 0)
+                 + (d.ad_leads || 0) * (this.params.adCommission || 0)
+                 + (d.natural_leads || 0) * (this.params.naturalCommission || 0);
+        },
+
+        calcCommission(s) {
+            return (s.total_leads || 0) * (this.params.leadCommission || 0)
+                 + (s.ad_leads || 0) * (this.params.adCommission || 0)
+                 + (s.natural_leads || 0) * (this.params.naturalCommission || 0);
+        },
+
+        // 总薪资 = 上播收入（已包含时薪+所有提成）
+        calcTotal(s) { return this.calcBase(s); },
+
+        totalBaseSalary() { return this.summary.reduce((a, s) => a + this.calcBase(s), 0); },
+        totalCommission() { return this.summary.reduce((a, s) => a + this.calcCommission(s), 0); },
+        totalSalary() { return this.summary.reduce((a, s) => a + this.calcTotal(s), 0); },
+
+        exportExcel() {
+            const rows = [];
+            for (const s of this.summary) {
+                rows.push({
+                    '主播': s.anchor_name,
+                    '类型': s.is_parttime ? '兼职' : '全职',
+                    '直播时长': this.formatHours(s.total_hours),
+                    '上播天数': s.days,
+                    '线索数': s.total_leads,
+                    '广告流留资': s.ad_leads,
+                    '自然流留资': s.natural_leads,
+                    '评论数': s.comment_count,
+                    '评论获客': s.comment_leads,
+                    '获客率': (s.comment_conversion_rate || 0) + '%',
+                    '私信数': s.pm_count,
+                    '私信获客': s.pm_lead_count,
+                    '上播收入(¥)': this.calcBase(s).toFixed(0),
+                });
+            }
+            this._downloadCsv(rows, '主播月薪概览_' + this.filters.date_from + '~' + this.filters.date_to + '.csv');
+        },
+
+        exportDetailExcel() {
+            const rows = [];
+            let sumDuration = 0, sumLeads = 0, sumAd = 0, sumNatural = 0, sumIncome = 0;
+            for (const d of this.detailRows) {
+                const income = this.calcDayIncome(d);
+                sumDuration += d.duration_minutes || 0;
+                sumLeads += d.total_leads || 0;
+                sumAd += d.ad_leads || 0;
+                sumNatural += d.natural_leads || 0;
+                sumIncome += income;
+                rows.push({
+                    '日期': d.date,
+                    '时长': this.formatDuration(d.duration_minutes),
+                    '线索数': d.total_leads || 0,
+                    '广告流': d.ad_leads || 0,
+                    '自然流': d.natural_leads || 0,
+                    '上播收入(¥)': income.toFixed(0),
+                });
+            }
+            // 汇总行
+            rows.push({
+                '日期': '合计',
+                '时长': this.formatDuration(sumDuration),
+                '线索数': sumLeads,
+                '广告流': sumAd,
+                '自然流': sumNatural,
+                '上播收入(¥)': sumIncome.toFixed(0),
+            });
+            this._downloadCsv(rows, this.selectedAnchor + '_薪酬明细_' + this.filters.date_from + '~' + this.filters.date_to + '.csv');
+        },
+
+        _downloadCsv(rows, filename) {
+            if (rows.length === 0) { alert('没有数据可导出'); return; }
+            const csvHeader = Object.keys(rows[0]).join(',');
+            const csvBody = rows.map(r => Object.values(r).map(v => '"' + String(v).replace(/"/g, '""') + '"').join(',')).join('\n');
+            const bom = '\uFEFF';
+            const blob = new Blob([bom + csvHeader + '\n' + csvBody], { type: 'text/csv;charset=utf-8;' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            a.click();
+            URL.revokeObjectURL(url);
+        },
+
+        _getFirstDayOfMonth() {
+            const now = new Date();
+            return now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-01';
+        },
+
+        _getLastDayOfMonth() {
+            const now = new Date();
+            const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+            return now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(lastDay).padStart(2, '0');
+        }
+    };
+}
+</script>
+{% endblock %}
