@@ -21,7 +21,7 @@ function sidebarApp() {
         expand: JSON.parse(localStorage.getItem('sidebar_expand') || '{"anchor":false,"schedule":false,"plan":false,"extend":false,"config":false}'),
         // 使用响应的 _path 追踪当前路径，确保 Alpine 在路径变化时重新计算绑定
         _path: location.pathname,
-        _knownPaths: {anchor:['anchors','anchor-income','anchor-salary'],schedule:['schedules','schedule-calendar','schedule-log'],plan:['ad-accounts','ad-plans','leads'],extend:['deals','recruit-teams'],config:['/admin/ai','/admin/email','/admin/settings','clue-configs','dashboard-tabs']},
+        _knownPaths: {anchor:['anchors','anchor-income','anchor-salary'],schedule:['schedules','schedule-calendar','schedule-log'],plan:['ad-accounts','ad-plans','leads'],extend:['deals','recruit-teams'],config:['/admin/ai','/admin/email','/admin/settings','clue-configs','dashboard-tabs','poll-logs']},
         get active() {
             return this._path;
         },
@@ -163,6 +163,7 @@ function sidebarApp() {
                     <a href="/admin/email" @click.prevent="loadContent('/admin/email')" :class="isActive('/admin/email') ? 'sidebar-link active' : 'sidebar-link'" class="sidebar-link flex items-center gap-2 pl-9 text-sm">邮箱配置</a>
                     <a href="/admin/settings" @click.prevent="loadContent('/admin/settings')" :class="isActive('/admin/settings') ? 'sidebar-link active' : 'sidebar-link'" class="sidebar-link flex items-center gap-2 pl-9 text-sm">系统设置</a>
                     <a href="/admin/clue-configs" @click.prevent="loadContent('/admin/clue-configs')" :class="isActive('/admin/clue-configs') ? 'sidebar-link active' : 'sidebar-link'" class="sidebar-link flex items-center gap-2 pl-9 text-sm">API线索账号</a>
+                    <a href="/admin/poll-logs" @click.prevent="loadContent('/admin/poll-logs')" :class="isActive('/admin/poll-logs') ? 'sidebar-link active' : 'sidebar-link'" class="sidebar-link flex items-center gap-2 pl-9 text-sm">轮询日志</a>
                     <a href="/admin/dashboard-tabs" @click.prevent="loadContent('/admin/dashboard-tabs')" :class="isActive('/admin/dashboard-tabs') ? 'sidebar-link active' : 'sidebar-link'" class="sidebar-link flex items-center gap-2 pl-9 text-sm">报表Tab配置</a>
                 </div>
             </div>
