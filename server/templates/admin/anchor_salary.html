@@ -214,6 +214,7 @@
                 <tfoot>
                     <tr class="border-t-2 bg-gray-50 font-bold">
                         <td>合计</td>
+                        <td></td>
                         <td x-text="formatDuration(detailRows.reduce((a,d)=>a + (d.duration_minutes||0), 0))"></td>
                         <td class="text-center" x-text="detailRows.reduce((a,d)=>a + (d.total_leads||0), 0)"></td>
                         <td class="text-center text-purple-600" x-text="detailRows.reduce((a,d)=>a + (d.ad_leads||0), 0)"></td>
