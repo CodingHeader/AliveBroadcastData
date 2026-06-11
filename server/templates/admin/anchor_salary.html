@@ -141,7 +141,7 @@
                             <td x-text="(s.comment_conversion_rate || 0) + '%'"></td>
                             <td class="text-pink-600" x-text="s.pm_count"></td>
                             <td class="text-rose-600" x-text="s.pm_lead_count"></td>
-                            <td class="text-green-600 font-bold" x-text="'¥' + calcBase(s).toFixed(0)"></td>
+                            <td class="text-green-600 font-bold" x-text="'¥' + (s.total_salary ? s.total_salary.toFixed(0) : calcBase(s).toFixed(0))"></td>
                             <td>
                                 <button @click="showDetail(s.anchor_name)" class="text-blue-500 hover:text-blue-700 text-xs underline">详情</button>
                             </td>
@@ -164,7 +164,7 @@
                         <td></td>
                         <td class="text-pink-600" x-text="summary.reduce((a,s)=>a+s.pm_count,0)"></td>
                         <td class="text-rose-600" x-text="summary.reduce((a,s)=>a+s.pm_lead_count,0)"></td>
-                        <td class="text-green-600 font-bold" x-text="'¥' + totalBaseSalary().toFixed(0)"></td>
+                        <td class="text-green-600 font-bold" x-text="'¥' + summary.reduce((a,s) => a + (s.total_salary || calcBase(s)), 0).toFixed(0)"></td>
                         <td></td>
                     </tr>
                 </tfoot>
@@ -369,6 +369,8 @@ function anchorSalaryApp() {
         async calculate() {
             this.loaded = true;
             this.loading = true;
+            // 直接使用前端 params 重新计算，确保即时响应
+            // 同时异步请求服务端以获取最新统计数据
             try {
                 await this.calcWithParams();
             } catch (e) {
