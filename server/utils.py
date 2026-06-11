@@ -49,3 +49,17 @@ def format_duration_hms(start_time: str, end_time: str) -> str:
         return f"{h}:{m:02d}:{s:02d}"
     except (ValueError, TypeError):
         return "—"
+
+def time_in_range(on_time: str, off_time: str, target_time: str) -> bool:
+    """判断目标时间 HH:mm 是否在 [on_time, off_time) 区间内（支持跨天）"""
+    try:
+        t_min = int(target_time[:2]) * 60 + int(target_time[3:5])
+        on_min = int(on_time[:2]) * 60 + int(on_time[3:])
+        off_min = int(off_time[:2]) * 60 + int(off_time[3:])
+        if off_min <= on_min:
+            off_min += 24 * 60
+        if t_min < on_min:
+            t_min += 24 * 60
+        return on_min <= t_min < off_min
+    except (ValueError, IndexError, TypeError):
+        return False

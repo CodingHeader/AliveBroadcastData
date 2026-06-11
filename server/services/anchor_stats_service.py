@@ -98,18 +98,6 @@ def get_comprehensive_stats(
     # ===== 预加载场次级别的线索和评论统计 =====
     session_ids = list(set(r.session_id for r in rows))
 
-    # 线索统计
-    # 注意：ad_account='--' 表示非广告线索（自然流），ad_account=None 也是自然流
-    # 不能同时计入广告和自然，否则会重复计数
-    lead_rows = db.query(
-        Lead.session_id,
-        func.count(Lead.id).label('total'),
-        func.sum(case(((Lead.ad_account != None) & (Lead.ad_account != '--'), 1), else_=0)).label('ad'),
-        func.sum(case(((Lead.ad_account == None) | (Lead.ad_account == '--'), 1), else_=0)).label('natural'),
-        func.sum(case((Lead.is_valid == True, 1), else_=0)).label('effective'),
-    ).filter(Lead.session_id.in_(session_ids)).group_by(Lead.session_id).all()
-    lead_map = {lr.session_id: lr for lr in lead_rows}
-
     # 评论统计（分母：咨询相关评论is_consultation=True）
     comment_rows = db.query(
         Comment.session_id,
@@ -154,12 +142,32 @@ def get_comprehensive_stats(
 
         session_period = _calc_session_period(on_t)
 
-        # 线索统计
-        lr = lead_map.get(r.session_id)
-        total_leads = lr.total if lr else 0
-        ad_leads = lr.ad if lr else 0
-        natural_leads = lr.natural if lr else 0
-        effective_leads = lr.effective if lr else 0
+        # 线索统计（按时间精确匹配：只取留资时间落在主播时段内的线索）
+        from utils import time_in_range
+        session_leads = db.query(Lead).filter(Lead.session_id == r.session_id).all()
+        on_t = r.on_time or (r.session_start[11:16] if r.session_start else "")
+        off_t = r.off_time or (r.session_end[11:16] if r.session_end else "")
+        total_leads = ad_leads = natural_leads = effective_leads = 0
+        if on_t and off_t and session_leads:
+            for l in session_leads:
+                lt = l.lead_time
+                if lt and len(lt) >= 16 and time_in_range(on_t, off_t, lt[11:16]):
+                    total_leads += 1
+                    if l.ad_account is not None and l.ad_account != '--':
+                        ad_leads += 1
+                    else:
+                        natural_leads += 1
+                    if l.is_valid:
+                        effective_leads += 1
+        elif session_leads:
+            total_leads = len(session_leads)
+            for l in session_leads:
+                if l.ad_account is not None and l.ad_account != '--':
+                    ad_leads += 1
+                else:
+                    natural_leads += 1
+                if l.is_valid:
+                    effective_leads += 1
 
         # 评论统计
         cr = comment_map.get(r.session_id)

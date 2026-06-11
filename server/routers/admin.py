@@ -9,7 +9,7 @@ from pydantic import BaseModel, field_validator
 from typing import Optional
 from datetime import datetime
 from pathlib import Path
-import json, os, shutil, io
+import json, os, shutil, io, time
 
 router = APIRouter()
 
@@ -279,11 +279,27 @@ def anchor_income_stats(date_from: str = None, date_to: str = None, anchor_id: i
         except:
             session_period = "未知"
 
-        lead_stats = db.query(
-            func.count(Lead.id).label('total_leads'),
-            func.sum(case(((Lead.ad_account != None) & (Lead.ad_account != '--'), 1), else_=0)).label('ad_leads'),
-            func.sum(case(((Lead.ad_account == None) | (Lead.ad_account == '--'), 1), else_=0)).label('natural_leads')
-        ).filter(Lead.session_id == row.session_id).first()
+        # 按线索时间匹配主播时段：只取在该主播上/下播时段内的线索
+        from utils import time_in_range
+        all_session_leads = db.query(Lead).filter(Lead.session_id == row.session_id).all()
+        total_leads = ad_leads = natural_leads = 0
+        if on_time and off_time and all_session_leads:
+            for l in all_session_leads:
+                lt = l.lead_time
+                if lt and len(lt) >= 16 and time_in_range(on_time, off_time, lt[11:16]):
+                    total_leads += 1
+                    if l.ad_account is not None and l.ad_account != '--':
+                        ad_leads += 1
+                    else:
+                        natural_leads += 1
+        elif all_session_leads:
+            # 没有主播时段时全部计入（降级兼容）
+            total_leads = len(all_session_leads)
+            for l in all_session_leads:
+                if l.ad_account is not None and l.ad_account != '--':
+                    ad_leads += 1
+                else:
+                    natural_leads += 1
 
         comment_stats = db.query(
             func.count(Comment.id).label('comment_count'),
@@ -306,9 +322,9 @@ def anchor_income_stats(date_from: str = None, date_to: str = None, anchor_id: i
             "session_period": session_period,
             "duration_hours": duration_hours,
             "income": income,
-            "ad_lead_count": int(lead_stats.ad_leads or 0) if lead_stats else 0,
-            "natural_lead_count": int(lead_stats.natural_leads or 0) if lead_stats else 0,
-            "total_lead_count": int(lead_stats.total_leads or 0) if lead_stats else 0,
+            "ad_lead_count": ad_leads,
+            "natural_lead_count": natural_leads,
+            "total_lead_count": total_leads,
             "comment_count": comment_stats.comment_count if comment_stats else 0,
             "comment_lead_count": int(comment_stats.comment_leads or 0) if comment_stats else 0,
             "pm_count": pm_stats.pm_count if pm_stats else 0,
@@ -749,7 +765,9 @@ def list_ad_accounts(admin=Depends(get_current_admin), db: DBSession = Depends(g
 
 @router.post("/ad-accounts")
 def create_ad_account(data: dict, admin=Depends(get_current_admin), db: DBSession = Depends(get_db)):
-    account = AdAccount(account_name=data["account_name"], merchant_id=data.get("merchant_id"), account_id=data.get("account_id"), notes=data.get("notes"))
+    # account_id在数据库中为NOT NULL，如果未提供则自动生成
+    account_id = data.get("account_id") or f"auto_{int(time.time()*1000)}"
+    account = AdAccount(account_name=data["account_name"], merchant_id=data.get("merchant_id"), account_id=account_id, notes=data.get("notes"))
     db.add(account); db.commit(); db.refresh(account)
     return {"code": 0, "account_id": account.id}
 
@@ -1154,6 +1172,74 @@ def poll_clues_now(admin=Depends(get_current_admin)):
     thread = threading.Thread(target=poll_all_clues, kwargs={"triggered_by": "manual"}, daemon=True)
     thread.start()
     return {"code": 0, "message": "线索轮询已触发，请稍后查看采集日志"}
+
+
+@router.post("/clue-configs/poll-history")
+def poll_clues_history(data: dict, admin=Depends(get_current_admin)):
+    """历史线索补采：从指定日期开始采集到当前
+    请求参数: {"start_date": "2026-06-03"}
+    """
+    from services.clue_service import poll_all_clues, query_clues, get_access_token, match_anchor
+    from models import ClueConfig, ApiClue, PollLog
+    from database import SessionLocal
+    from datetime import datetime as dt, timedelta
+    import time as _time
+
+    start_date = data.get("start_date", "2026-06-03")
+    try:
+        dt.strptime(start_date, "%Y-%m-%d")
+    except ValueError:
+        return {"code": 400, "message": "日期格式错误，应为 YYYY-MM-DD"}
+
+    def _run():
+        db = SessionLocal()
+        try:
+            configs = db.query(ClueConfig).filter(ClueConfig.is_active == True).all()
+            if not configs:
+                return
+            total_new = 0
+            for config in configs:
+                token = get_access_token(config.client_key, config.client_secret)
+                if not token:
+                    continue
+                acct_id = config.ad_account.merchant_id if config.ad_account and config.ad_account_id else config.account_id
+                current = dt.strptime(start_date, "%Y-%m-%d")
+                yesterday = dt.now() - timedelta(days=1)
+                while current <= yesterday:
+                    day_start = current.strftime("%Y-%m-%d 00:00:00")
+                    day_end = current.strftime("%Y-%m-%d 23:59:59")
+                    page = 1
+                    while True:
+                        clue_data = query_clues(token, acct_id, page=page, start_time=day_start, end_time=day_end)
+                        if not clue_data: break
+                        clue_list = clue_data.get("clue_data", [])
+                        if not clue_list: break
+                        for clue in clue_list:
+                            cid = clue.get("clue_id")
+                            if not cid: continue
+                            if db.query(ApiClue).filter(ApiClue.clue_id == cid).first(): continue
+                            aid = match_anchor(clue.get("create_time_detail"), db)
+                            db.add(ApiClue(clue_id=cid, account_id=acct_id,
+                                create_time_detail=clue.get("create_time_detail"),
+                                name=clue.get("name"), author_nickname=clue.get("author_nickname"),
+                                advertiser_name=clue.get("advertiser_name"),
+                                product_name=clue.get("product_name"),
+                                flow_entrance=clue.get("flow_entrance"), flow_type=clue.get("flow_type"),
+                                weixin=clue.get("weixin"), anchor_id=aid))
+                            total_new += 1
+                        db.commit()
+                        p = clue_data.get("page", {})
+                        if len(clue_list) < (p.get("page_size", 100) or 100): break
+                        page += 1
+                    current += timedelta(days=1)
+            db.commit()
+        finally:
+            db.close()
+
+    import threading
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+    return {"code": 0, "message": f"历史补采已启动，将采集 {start_date} 至今的线索"}
 
 
 @router.post("/clue-configs/assign-history")
