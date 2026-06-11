@@ -7,7 +7,7 @@
     </div>
     <table class="data-table bg-white rounded-lg shadow-sm"><thead><tr><th>客户</th><th>关联线索</th><th>金额</th><th>成交时间</th><th>员工</th><th>操作</th></tr></thead>
     <tbody><template x-for="d in deals"><tr><td x-text="d.customer_name"></td><td><span x-text="d.lead_nickname||'-'" :class="d.lead_nickname?'text-blue-600':'text-gray-400'"></span></td><td x-text="'¥'+d.amount"></td><td x-text="d.deal_time"></td><td x-text="d.employee||'-'"></td><td><button @click="deleteDeal(d.id)" class="text-red-500 hover:text-red-700 text-sm">删除</button></td></tr></template></tbody></table>
-    <div x-show="showModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center">
+    <div x-show="showModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center" @click.self="showModal=false">
         <div class="bg-white p-6 rounded-lg shadow-xl w-[480px] space-y-3">
             <h3 class="font-bold">新增成单</h3>
             <select x-model="form.session_id" @change="loadLeads()" class="form-input">
@@ -32,12 +32,12 @@ function dealsApp() { return { deals: [], showModal: false, sessions:[], leads:[
     async loadData() { const r = await adminFetch('/admin/api/deals'); const j = await r.json(); this.deals = j.data?.items || []; },
     async loadSessions() {
         const r = await fetch('/api/sessions?page=1&size=30'); const j = await r.json();
-        this.sessions = (j.data?.items||[]).map(s => ({id:s.id, label:`${s.start_time.slice(5,16)} (${s.duration_minutes}分钟)`}));
+        this.sessions = (j.data?.items||[]).map(s => ({id:s.id, label:`${s.start_time.slice(0,16)} ~ ${s.end_time.slice(0,16)} (${s.duration_minutes}分钟)`}));
     },
     async loadLeads() {
         if (!this.form.session_id) { this.leads = []; return; }
         const r = await adminFetch(`/admin/api/leads?session_id=${this.form.session_id}`); const j = await r.json();
-        this.leads = (j.data?.items||[]).map(l => ({id:l.id, label:`${l.nickname} | ${l.city||'-'} | ${l.lead_time}`}));
+        this.leads = (j.data?.items||[]).map(l => ({id:l.id, label:`${l.nickname} | ${l.city||'-'} | ${l.phone_masked||'-'} | ${l.product_name||'-'} | ${l.lead_time}`}));
     },
     async saveDeal() { await adminFetch('/admin/api/deals', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(this.form)}); this.showModal=false; this.loadData(); },
     async deleteDeal(id) { if(!confirm('确认删除?')) return; await adminFetch(`/admin/api/deals/${id}`, {method:'DELETE'}); this.loadData(); }
