@@ -1,0 +1,160 @@
+{% extends "admin/base.html" %}
+{% block admin_content %}
+<div x-data="clueConfigs()">
+    <div class="flex items-center justify-between mb-6">
+        <h2 class="text-xl font-bold text-gray-800">API线索账号配置</h2>
+        <button @click="openCreate()" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 text-sm">+ 新增账号</button>
+    </div>
+
+    <div class="bg-white rounded-lg shadow overflow-hidden">
+        <table class="w-full text-sm">
+            <thead class="bg-gray-50">
+                <tr>
+                    <th class="px-4 py-3 text-left font-medium text-gray-600">账号名称</th>
+                    <th class="px-4 py-3 text-left font-medium text-gray-600">关联直播账户</th>
+                    <th class="px-4 py-3 text-left font-medium text-gray-600">Client Key</th>
+                    <th class="px-4 py-3 text-left font-medium text-gray-600">状态</th>
+                    <th class="px-4 py-3 text-left font-medium text-gray-600">轮询(秒)</th>
+                    <th class="px-4 py-3 text-left font-medium text-gray-600">解密</th>
+                    <th class="px-4 py-3 text-left font-medium text-gray-600">操作</th>
+                </tr>
+            </thead>
+            <tbody>
+                <template x-for="c in configs" :key="c.id">
+                    <tr class="border-t hover:bg-gray-50">
+                        <td class="px-4 py-3 font-medium" x-text="c.account_name"></td>
+                        <td class="px-4 py-3" x-text="c.ad_account_name || c.account_id || '-'"></td>
+                        <td class="px-4 py-3 font-mono text-xs" x-text="c.client_key"></td>
+                        <td class="px-4 py-3">
+                            <span :class="c.is_active ? 'text-green-600' : 'text-gray-400'" x-text="c.is_active ? '启用' : '停用'"></span>
+                        </td>
+                        <td class="px-4 py-3" x-text="c.poll_interval_seconds || 30"></td>
+                        <td class="px-4 py-3">
+                            <span :class="c.decrypt_enabled ? 'text-green-600' : 'text-gray-400'" x-text="c.decrypt_enabled ? '开启' : '关闭'"></span>
+                        </td>
+                        <td class="px-4 py-3 space-x-2">
+                            <button @click="testConfig(c)" class="text-purple-600 hover:underline text-xs">测试</button>
+                            <button @click="openEdit(c)" class="text-blue-600 hover:underline">编辑</button>
+                            <button @click="deleteConfig(c)" class="text-red-600 hover:underline">删除</button>
+                        </td>
+                    </tr>
+                </template>
+            </tbody>
+        </table>
+    </div>
+
+    <!-- 编辑弹窗 -->
+    <div x-show="showModal" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50" x-cloak @click.self="showModal=false">
+        <div class="bg-white rounded-xl shadow-xl w-full max-w-lg max-h-[90vh] overflow-y-auto p-6">
+            <h3 class="text-lg font-bold mb-4" x-text="editingId ? '编辑账号' : '新增账号'"></h3>
+            <div class="space-y-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">账号名称</label>
+                    <input x-model="form.account_name" class="w-full border rounded-lg px-3 py-2 text-sm" placeholder="如：矩阵号A">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">关联直播账户</label>
+                    <select x-model="form.ad_account_id" class="w-full border rounded-lg px-3 py-2 text-sm">
+                        <option value="">-- 请选择直播账户 --</option>
+                        <template x-for="acc in adAccounts" :key="acc.id">
+                            <option :value="acc.id" x-text="acc.account_name + (acc.merchant_id ? ' ('+acc.merchant_id+')' : '')"></option>
+                        </template>
+                    </select>
+                    <p class="text-xs text-gray-400 mt-1">绑定直播账户后，自动使用其抖音来客商家ID采集线索</p>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Client Key</label>
+                    <input x-model="form.client_key" class="w-full border rounded-lg px-3 py-2 text-sm font-mono" placeholder="编辑时留空则保留原值">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Client Secret</label>
+                    <input x-model="form.client_secret" type="password" class="w-full border rounded-lg px-3 py-2 text-sm font-mono" placeholder="编辑时留空则保留原值">
+                </div>
+                <div class="flex gap-4">
+                    <label class="flex items-center gap-2 text-sm">
+                        <input type="checkbox" x-model="form.is_active" class="rounded"> 启用
+                    </label>
+                    <label class="flex items-center gap-2 text-sm">
+                        <input type="checkbox" x-model="form.decrypt_enabled" class="rounded"> 开启解密
+                    </label>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">轮询间隔（秒）</label>
+                    <input x-model.number="form.poll_interval_seconds" type="number" class="w-full border rounded-lg px-3 py-2 text-sm" min="5">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">备注</label>
+                    <input x-model="form.notes" class="w-full border rounded-lg px-3 py-2 text-sm" placeholder="可选">
+                </div>
+            </div>
+            <div class="flex justify-end gap-3 mt-6">
+                <button @click="showModal=false" class="px-4 py-2 border rounded-lg text-sm hover:bg-gray-50">取消</button>
+                <button @click="saveConfig()" class="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700">保存</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+function clueConfigs() {
+    return {
+        configs: [],
+        adAccounts: [],
+        showModal: false,
+        editingId: null,
+        form: { account_name: '', ad_account_id: '', account_id: '', client_key: '', client_secret: '', is_active: true, decrypt_enabled: true, poll_interval_seconds: 30, notes: '' },
+
+        async init() { await Promise.all([this.load(), this.loadAdAccounts()]); },
+
+        async loadAdAccounts() {
+            const r = await fetch('/admin/api/ad-accounts', { headers: { 'Authorization': 'Bearer ' + localStorage.getItem('admin_token') } });
+            const j = await r.json();
+            this.adAccounts = j.data || [];
+        },
+
+        async load() {
+            const res = await fetch('/admin/api/clue-configs', { headers: { 'Authorization': 'Bearer ' + localStorage.getItem('admin_token') } });
+            const data = await res.json();
+            this.configs = data.data || [];
+        },
+
+        openCreate() {
+            this.editingId = null;
+            this.form = { account_name: '', ad_account_id: '', account_id: '', client_key: '', client_secret: '', is_active: true, decrypt_enabled: true, poll_interval_seconds: 30, notes: '' };
+            this.showModal = true;
+        },
+
+        openEdit(c) {
+            this.editingId = c.id;
+            // 编辑时不填充 client_key/client_secret，save时跳过空值以免覆盖
+            this.form = { account_name: c.account_name, ad_account_id: c.ad_account_id || '', account_id: c.account_id || '', client_key: '', client_secret: '', is_active: c.is_active, decrypt_enabled: c.decrypt_enabled, poll_interval_seconds: c.poll_interval_seconds || 30, notes: c.notes || '' };
+            // 清除密钥标记，保存时跳过空密钥
+            delete this.form.client_key;
+            delete this.form.client_secret;
+            this.showModal = true;
+        },
+
+        async saveConfig() {
+            const url = this.editingId ? `/admin/api/clue-configs/${this.editingId}` : '/admin/api/clue-configs';
+            const method = this.editingId ? 'PUT' : 'POST';
+            const res = await fetch(url, { method, headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + localStorage.getItem('admin_token') }, body: JSON.stringify(this.form) });
+            const data = await res.json();
+            if (data.code === 0) { this.showModal = false; await this.load(); } else { alert(data.message || '保存失败'); }
+        },
+
+        async deleteConfig(c) {
+            if (!confirm(`确定删除账号「${c.account_name}」？`)) return;
+            const res = await fetch(`/admin/api/clue-configs/${c.id}`, { method: 'DELETE', headers: { 'Authorization': 'Bearer ' + localStorage.getItem('admin_token') } });
+            const data = await res.json();
+            if (data.code === 0) await this.load(); else alert(data.message || '删除失败');
+        },
+
+        async testConfig(c) {
+            const res = await fetch(`/admin/api/clue-configs/${c.id}/test`, { method: 'POST', headers: { 'Authorization': 'Bearer ' + localStorage.getItem('admin_token') } });
+            const data = await res.json();
+            alert(data.message || '测试完成');
+        }
+    }
+}
+</script>
+{% endblock %}
