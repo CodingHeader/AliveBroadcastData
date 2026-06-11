@@ -19,19 +19,16 @@ if (typeof adminFetch === 'undefined') {
 function sidebarApp() {
     return {
         expand: JSON.parse(localStorage.getItem('sidebar_expand') || '{"anchor":false,"schedule":false,"plan":false,"extend":false,"config":false}'),
-        // 使用响应的 _path 追踪当前路径，确保 Alpine 在路径变化时重新计算绑定
+        // 使用响应的 _path 追踪当前路径
         _path: location.pathname,
         _knownPaths: {anchor:['anchors','anchor-income','anchor-salary'],schedule:['schedules','schedule-calendar','schedule-log'],plan:['ad-accounts','ad-plans','leads'],extend:['deals','recruit-teams'],config:['/admin/ai','/admin/email','/admin/settings','clue-configs','dashboard-tabs','poll-logs']},
-        get active() {
-            return this._path;
-        },
         init() {
             this._autoExpand();
             this._saveExpand();
             window.addEventListener('popstate', (e) => { this.loadContent(location.pathname, true); });
         },
         _autoExpand() {
-            const a = this.active;
+            const a = this._path;
             Object.keys(this._knownPaths).forEach(k => {
                 this._knownPaths[k].forEach(p => { if (a.includes(p)) this.expand[k] = true; });
             });
@@ -44,26 +41,31 @@ function sidebarApp() {
             this._saveExpand();
         },
         isActive(path) {
-            const a = this.active;
+            const a = this._path;
+            // 精确匹配：路径相同 or 路径+/xxx 子路径 or 路径?xxx 查询参数
             return a === path || a.startsWith(path + '/') || a.startsWith(path + '?');
+        },
+        navigateTo(url) {
+            // 统一导航入口：更新 _path → Alpine 响应式触发 isActive 重算
+            this._path = url;
+            this._autoExpand();
+            this._saveExpand();
+            this.loadContent(url);
         },
         async loadContent(url, isPopState = false) {
             if (!isPopState && url === location.pathname) return;
             try {
                 const resp = await adminFetch(url);
                 const html = await resp.text();
-                // 提取 <main> 内容
                 const mainMatch = html.match(/<main[^>]*>([\s\S]*?)<\/main>/i);
                 if (mainMatch) {
                     document.querySelector('main').innerHTML = mainMatch[1];
-                    // 重新执行页面内的 <script> 标签
                     Array.from(document.querySelectorAll('main script')).forEach(oldScript => {
                         const newScript = document.createElement('script');
                         Array.from(oldScript.attributes).forEach(attr => newScript.setAttribute(attr.name, attr.value));
                         newScript.textContent = oldScript.textContent;
                         oldScript.replaceWith(newScript);
                     });
-                    // 通知 Alpine.js 重新初始化新插入的 DOM 组件
                     if (typeof Alpine !== 'undefined') {
                         Alpine.initTree(document.querySelector('main'));
                     }
@@ -71,17 +73,9 @@ function sidebarApp() {
                 if (!isPopState) {
                     history.pushState({}, '', url);
                 }
-                // 更新响应式 _path，触发 Alpine 重新计算侧边栏高亮和展开状态
-                this._path = url;
-                this._autoExpand();
-                this._saveExpand();
-                // 通知 Alpine 刷新侧边栏 DOM
-                if (typeof Alpine !== 'undefined') {
-                    Alpine.initTree(document.querySelector('[x-data*="sidebarApp"]'));
-                }
             } catch(e) {
                 console.error('导航失败:', e);
-                location.href = url; // 降级: 整页刷新
+                location.href = url;
             }
         }
     };
@@ -104,9 +98,9 @@ function sidebarApp() {
                     <span class="font-medium text-white">主播管理</span>
                 </button>
                 <div x-show="expand.anchor" class="ml-2 mt-1 space-y-0.5">
-                    <a href="/admin/anchors" @click.prevent="loadContent('/admin/anchors')" :class="isActive('/admin/anchors') ? 'sidebar-link active' : 'sidebar-link'" class="sidebar-link flex items-center gap-2 pl-9 text-sm">主播配置</a>
-                    <a href="/admin/anchor-income" @click.prevent="loadContent('/admin/anchor-income')" :class="isActive('/admin/anchor-income') ? 'sidebar-link active' : 'sidebar-link'" class="sidebar-link flex items-center gap-2 pl-9 text-sm">直播详情</a>
-                    <a href="/admin/anchor-salary" @click.prevent="loadContent('/admin/anchor-salary')" :class="isActive('/admin/anchor-salary') ? 'sidebar-link active' : 'sidebar-link'" class="sidebar-link flex items-center gap-2 pl-9 text-sm">薪酬计算</a>
+                    <a href="/admin/anchors" @click.prevent="navigateTo('/admin/anchors')" :class="isActive('/admin/anchors') ? 'sidebar-link active' : 'sidebar-link'" class="sidebar-link flex items-center gap-2 pl-9 text-sm">主播配置</a>
+                    <a href="/admin/anchor-income" @click.prevent="navigateTo('/admin/anchor-income')" :class="isActive('/admin/anchor-income') ? 'sidebar-link active' : 'sidebar-link'" class="sidebar-link flex items-center gap-2 pl-9 text-sm">直播详情</a>
+                    <a href="/admin/anchor-salary" @click.prevent="navigateTo('/admin/anchor-salary')" :class="isActive('/admin/anchor-salary') ? 'sidebar-link active' : 'sidebar-link'" class="sidebar-link flex items-center gap-2 pl-9 text-sm">薪酬计算</a>
                 </div>
             </div>
 
@@ -118,9 +112,9 @@ function sidebarApp() {
                     <span class="font-medium text-white">排班管理</span>
                 </button>
                 <div x-show="expand.schedule" class="ml-2 mt-1 space-y-0.5">
-                    <a href="/admin/schedules" @click.prevent="loadContent('/admin/schedules')" :class="isActive('/admin/schedules') ? 'sidebar-link active' : 'sidebar-link'" class="sidebar-link flex items-center gap-2 pl-9 text-sm">排班方案</a>
-                    <a href="/admin/schedule-calendar" @click.prevent="loadContent('/admin/schedule-calendar')" :class="isActive('/admin/schedule-calendar') ? 'sidebar-link active' : 'sidebar-link'" class="sidebar-link flex items-center gap-2 pl-9 text-sm">排班日历</a>
-                    <a href="/admin/schedule-log" @click.prevent="loadContent('/admin/schedule-log')" :class="isActive('/admin/schedule-log') ? 'sidebar-link active' : 'sidebar-link'" class="sidebar-link flex items-center gap-2 pl-9 text-sm">排班日志</a>
+                    <a href="/admin/schedules" @click.prevent="navigateTo('/admin/schedules')" :class="isActive('/admin/schedules') ? 'sidebar-link active' : 'sidebar-link'" class="sidebar-link flex items-center gap-2 pl-9 text-sm">排班方案</a>
+                    <a href="/admin/schedule-calendar" @click.prevent="navigateTo('/admin/schedule-calendar')" :class="isActive('/admin/schedule-calendar') ? 'sidebar-link active' : 'sidebar-link'" class="sidebar-link flex items-center gap-2 pl-9 text-sm">排班日历</a>
+                    <a href="/admin/schedule-log" @click.prevent="navigateTo('/admin/schedule-log')" :class="isActive('/admin/schedule-log') ? 'sidebar-link active' : 'sidebar-link'" class="sidebar-link flex items-center gap-2 pl-9 text-sm">排班日志</a>
                 </div>
             </div>
 
@@ -132,9 +126,9 @@ function sidebarApp() {
                     <span class="font-medium text-white">直播计划</span>
                 </button>
                 <div x-show="expand.plan" class="ml-2 mt-1 space-y-0.5">
-                    <a href="/admin/ad-accounts" @click.prevent="loadContent('/admin/ad-accounts')" :class="isActive('/admin/ad-accounts') ? 'sidebar-link active' : 'sidebar-link'" class="sidebar-link flex items-center gap-2 pl-9 text-sm">直播账户</a>
-                    <a href="/admin/ad-plans" @click.prevent="loadContent('/admin/ad-plans')" :class="isActive('/admin/ad-plans') ? 'sidebar-link active' : 'sidebar-link'" class="sidebar-link flex items-center gap-2 pl-9 text-sm">投流计划</a>
-                    <a href="/admin/leads" @click.prevent="loadContent('/admin/leads')" :class="isActive('/admin/leads') ? 'sidebar-link active' : 'sidebar-link'" class="sidebar-link flex items-center gap-2 pl-9 text-sm">线索管理</a>
+                    <a href="/admin/ad-accounts" @click.prevent="navigateTo('/admin/ad-accounts')" :class="isActive('/admin/ad-accounts') ? 'sidebar-link active' : 'sidebar-link'" class="sidebar-link flex items-center gap-2 pl-9 text-sm">直播账户</a>
+                    <a href="/admin/ad-plans" @click.prevent="navigateTo('/admin/ad-plans')" :class="isActive('/admin/ad-plans') ? 'sidebar-link active' : 'sidebar-link'" class="sidebar-link flex items-center gap-2 pl-9 text-sm">投流计划</a>
+                    <a href="/admin/leads" @click.prevent="navigateTo('/admin/leads')" :class="isActive('/admin/leads') ? 'sidebar-link active' : 'sidebar-link'" class="sidebar-link flex items-center gap-2 pl-9 text-sm">线索管理</a>
                 </div>
             </div>
 
@@ -146,8 +140,8 @@ function sidebarApp() {
                     <span class="font-medium text-white">拓展配置</span>
                 </button>
                 <div x-show="expand.extend" class="ml-2 mt-1 space-y-0.5">
-                    <a href="/admin/deals" @click.prevent="loadContent('/admin/deals')" :class="isActive('/admin/deals') ? 'sidebar-link active' : 'sidebar-link'" class="sidebar-link flex items-center gap-2 pl-9 text-sm">成单管理</a>
-                    <a href="/admin/recruit-teams" @click.prevent="loadContent('/admin/recruit-teams')" :class="isActive('/admin/recruit-teams') ? 'sidebar-link active' : 'sidebar-link'" class="sidebar-link flex items-center gap-2 pl-9 text-sm">招生团队</a>
+                    <a href="/admin/deals" @click.prevent="navigateTo('/admin/deals')" :class="isActive('/admin/deals') ? 'sidebar-link active' : 'sidebar-link'" class="sidebar-link flex items-center gap-2 pl-9 text-sm">成单管理</a>
+                    <a href="/admin/recruit-teams" @click.prevent="navigateTo('/admin/recruit-teams')" :class="isActive('/admin/recruit-teams') ? 'sidebar-link active' : 'sidebar-link'" class="sidebar-link flex items-center gap-2 pl-9 text-sm">招生团队</a>
                 </div>
             </div>
 
@@ -159,12 +153,12 @@ function sidebarApp() {
                     <span class="font-medium text-white">系统配置</span>
                 </button>
                 <div x-show="expand.config" class="ml-2 mt-1 space-y-0.5">
-                    <a href="/admin/ai" @click.prevent="loadContent('/admin/ai')" :class="isActive('/admin/ai') ? 'sidebar-link active' : 'sidebar-link'" class="sidebar-link flex items-center gap-2 pl-9 text-sm">AI配置</a>
-                    <a href="/admin/email" @click.prevent="loadContent('/admin/email')" :class="isActive('/admin/email') ? 'sidebar-link active' : 'sidebar-link'" class="sidebar-link flex items-center gap-2 pl-9 text-sm">邮箱配置</a>
-                    <a href="/admin/settings" @click.prevent="loadContent('/admin/settings')" :class="isActive('/admin/settings') ? 'sidebar-link active' : 'sidebar-link'" class="sidebar-link flex items-center gap-2 pl-9 text-sm">系统设置</a>
-                    <a href="/admin/clue-configs" @click.prevent="loadContent('/admin/clue-configs')" :class="isActive('/admin/clue-configs') ? 'sidebar-link active' : 'sidebar-link'" class="sidebar-link flex items-center gap-2 pl-9 text-sm">API线索账号</a>
-                    <a href="/admin/poll-logs" @click.prevent="loadContent('/admin/poll-logs')" :class="isActive('/admin/poll-logs') ? 'sidebar-link active' : 'sidebar-link'" class="sidebar-link flex items-center gap-2 pl-9 text-sm">线索推送</a>
-                    <a href="/admin/dashboard-tabs" @click.prevent="loadContent('/admin/dashboard-tabs')" :class="isActive('/admin/dashboard-tabs') ? 'sidebar-link active' : 'sidebar-link'" class="sidebar-link flex items-center gap-2 pl-9 text-sm">报表Tab配置</a>
+                    <a href="/admin/ai" @click.prevent="navigateTo('/admin/ai')" :class="isActive('/admin/ai') ? 'sidebar-link active' : 'sidebar-link'" class="sidebar-link flex items-center gap-2 pl-9 text-sm">AI配置</a>
+                    <a href="/admin/email" @click.prevent="navigateTo('/admin/email')" :class="isActive('/admin/email') ? 'sidebar-link active' : 'sidebar-link'" class="sidebar-link flex items-center gap-2 pl-9 text-sm">邮箱配置</a>
+                    <a href="/admin/settings" @click.prevent="navigateTo('/admin/settings')" :class="isActive('/admin/settings') ? 'sidebar-link active' : 'sidebar-link'" class="sidebar-link flex items-center gap-2 pl-9 text-sm">系统设置</a>
+                    <a href="/admin/clue-configs" @click.prevent="navigateTo('/admin/clue-configs')" :class="isActive('/admin/clue-configs') ? 'sidebar-link active' : 'sidebar-link'" class="sidebar-link flex items-center gap-2 pl-9 text-sm">API线索账号</a>
+                    <a href="/admin/poll-logs" @click.prevent="navigateTo('/admin/poll-logs')" :class="isActive('/admin/poll-logs') ? 'sidebar-link active' : 'sidebar-link'" class="sidebar-link flex items-center gap-2 pl-9 text-sm">线索推送</a>
+                    <a href="/admin/dashboard-tabs" @click.prevent="navigateTo('/admin/dashboard-tabs')" :class="isActive('/admin/dashboard-tabs') ? 'sidebar-link active' : 'sidebar-link'" class="sidebar-link flex items-center gap-2 pl-9 text-sm">报表Tab配置</a>
                 </div>
             </div>
         </nav>
