@@ -1,0 +1,200 @@
+{% extends "admin/base.html" %}
+{% block admin_content %}
+<div x-data="scheduleApp()" x-init="loadData()" class="space-y-4">
+    <div class="flex justify-between items-center">
+        <h2 class="text-xl font-bold">排班方案</h2>
+        <button @click="showCreateModal=true" class="btn-primary">新建方案</button>
+    </div>
+
+    <!-- 方案列表 -->
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        <template x-for="p in plans" :key="p.id">
+            <div class="card border-l-4" :class="p.is_active ? 'border-l-green-500' : 'border-l-gray-400'">
+                <div class="flex justify-between items-start mb-2">
+                    <h3 class="font-bold text-lg" x-text="p.name"></h3>
+                    <span class="text-xs px-2 py-0.5 rounded" :class="p.is_active ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'" x-text="p.is_active ? '有效' : '停用'"></span>
+                </div>
+                <div class="text-sm text-gray-600 space-y-1">
+                    <div>开播: <span x-text="p.start_time"></span> ~ 关播: <span x-text="p.end_time"></span></div>
+                    <div>粒度: <span x-text="p.time_granularity + '分钟'"></span> | 直播间: <span x-text="p.room_count"></span> | 主播: <span x-text="p.anchor_count"></span>人</div>
+                    <div x-show="p.notes" class="text-gray-400" x-text="p.notes"></div>
+                </div>
+                <div class="flex space-x-2 mt-3 pt-2 border-t">
+                    <button @click="editPlan(p)" class="text-blue-500 hover:text-blue-700 text-sm">编辑大纲</button>
+                    <button @click="openDetail(p.id)" class="text-green-500 hover:text-green-700 text-sm">配置明细</button>
+                    <button @click="deletePlan(p.id)" class="text-red-500 hover:text-red-700 text-sm">删除</button>
+                </div>
+            </div>
+        </template>
+    </div>
+
+    <!-- 新建/编辑方案弹窗 -->
+    <div x-show="showCreateModal" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50" @click.self="showCreateModal=false">
+        <div class="bg-white rounded-lg p-6 w-full max-w-lg space-y-4">
+            <h3 class="text-lg font-bold" x-text="editingPlan ? '编辑方案大纲' : '新建排班方案'"></h3>
+            <div class="grid grid-cols-2 gap-4">
+                <div class="col-span-2"><label class="text-sm text-gray-600">方案名称</label><input x-model="form.name" class="form-input" placeholder="如：工作日5人场"></div>
+                <div><label class="text-sm text-gray-600">开播时间</label><input x-model="form.start_time" type="time" class="form-input"></div>
+                <div><label class="text-sm text-gray-600">关播时间</label><input x-model="form.end_time" type="time" class="form-input" step="3600"></div>
+                <div><label class="text-sm text-gray-600">时间粒度(分钟)</label>
+                    <select x-model="form.time_granularity" class="form-input">
+                        <option value="30">0.5小时</option><option value="60">1小时</option><option value="120">2小时</option><option value="180">3小时</option>
+                    </select>
+                </div>
+                <div><label class="text-sm text-gray-600">直播间数量</label>
+                    <select x-model="form.room_count" class="form-input">
+                        <option value="1">1个</option><option value="2">2个</option><option value="3">3个</option>
+                    </select>
+                </div>
+                <div><label class="text-sm text-gray-600">主播人数</label>
+                    <select x-model="form.anchor_count" class="form-input">
+                        <option value="1">1人</option><option value="2">2人</option><option value="3">3人</option><option value="4">4人</option><option value="5">5人</option><option value="6">6人</option>
+                    </select>
+                </div>
+                <div><label class="text-sm text-gray-600">是否有效</label>
+                    <select x-model="form.is_active" class="form-input">
+                        <option value="true">有效</option><option value="false">停用</option>
+                    </select>
+                </div>
+                <div class="col-span-2"><label class="text-sm text-gray-600">备注</label><input x-model="form.notes" class="form-input" placeholder="可选"></div>
+            </div>
+            <div class="flex justify-end space-x-2">
+                <button @click="showCreateModal=false" class="px-4 py-2 border rounded hover:bg-gray-50">取消</button>
+                <button @click="savePlan()" class="btn-primary">保存</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 明细配置弹窗 -->
+    <div x-show="showDetailModal" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50" @click.self="showDetailModal=false">
+        <div class="bg-white rounded-lg p-6 w-full max-w-4xl max-h-[90vh] overflow-auto space-y-4">
+            <div class="flex justify-between items-center">
+                <h3 class="text-lg font-bold">排班明细 - <span x-text="detailPlan?.name"></span></h3>
+                <button @click="showDetailModal=false" class="text-gray-400 hover:text-gray-600 text-2xl">&times;</button>
+            </div>
+            <!-- 占位符说明 -->
+            <div class="bg-blue-50 p-3 rounded text-sm">
+                <span class="font-medium">占位符：</span>
+                <template x-for="i in detailPlan?.anchor_count || 0" :key="i">
+                    <span class="inline-block bg-blue-100 text-blue-700 px-2 py-0.5 rounded mr-1" x-text="'主播'+i"></span>
+                </template>
+                <span class="text-gray-500 ml-2">在日历绑定时关联真实主播</span>
+            </div>
+            <!-- 排班表格 -->
+            <div class="overflow-x-auto">
+                <table class="data-table" x-show="detailSlots.length > 0">
+                    <thead>
+                        <tr>
+                            <th>时段</th>
+                            <template x-for="r in detailPlan?.room_count || 2" :key="r">
+                                <th x-text="'直播间'+r"></th>
+                            </template>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <template x-for="slot in detailTimeSlots" :key="slot">
+                            <tr>
+                                <td class="font-mono text-sm whitespace-nowrap" x-text="slot"></td>
+                                <template x-for="r in detailPlan?.room_count || 2" :key="r">
+                                    <td>
+                                        <div class="flex space-x-1">
+                                            <select class="form-input py-0.5 text-xs w-28"
+                                                x-model="getSlotData(slot, r).slot_status"
+                                                @change="onSlotStatusChange(slot, r)">
+                                                <option value="off_air">关播休息</option>
+                                                <option value="on_air_empty">开播无主播</option>
+                                                <option value="on_air_anchor">开播有主播</option>
+                                            </select>
+                                            <select class="form-input py-0.5 text-xs w-20"
+                                                x-show="getSlotData(slot, r).slot_status === 'on_air_anchor'"
+                                                x-model="getSlotData(slot, r).anchor_slot">
+                                                <option value="">-</option>
+                                                <template x-for="i in detailPlan?.anchor_count || 0" :key="i">
+                                                    <option :value="i" x-text="'主播'+i"></option>
+                                                </template>
+                                            </select>
+                                        </div>
+                                    </td>
+                                </template>
+                            </tr>
+                        </template>
+                    </tbody>
+                </table>
+            </div>
+            <div class="flex justify-end space-x-2">
+                <button @click="showDetailModal=false" class="px-4 py-2 border rounded hover:bg-gray-50">取消</button>
+                <button @click="saveSlots()" class="btn-primary">保存明细</button>
+            </div>
+        </div>
+    </div>
+</div>
+<script>
+function scheduleApp() {
+    return {
+        plans: [], showCreateModal: false, showDetailModal: false,
+        editingPlan: null, detailPlan: null, detailSlots: [],
+        anchorParttime: {},
+        form: { name:'', start_time:'08:00', end_time:'23:00', time_granularity:'60', room_count:'2', anchor_count:'5', is_active:'true', notes:'' },
+
+        async loadData() {
+            const r = await adminFetch('/admin/api/schedule/plans'); const j = await r.json();
+            this.plans = j.data || [];
+        },
+        editPlan(p) {
+            this.editingPlan = p;
+            this.form = { name:p.name, start_time:p.start_time, end_time:p.end_time,
+                time_granularity:String(p.time_granularity), room_count:String(p.room_count),
+                anchor_count:String(p.anchor_count), is_active:String(p.is_active), notes:p.notes||'' };
+            this.showCreateModal = true;
+        },
+        async savePlan() {
+            const data = {...this.form, time_granularity:parseInt(this.form.time_granularity),
+                room_count:parseInt(this.form.room_count), anchor_count:parseInt(this.form.anchor_count),
+                is_active:this.form.is_active==='true'};
+            if (this.editingPlan) {
+                await adminFetch(`/admin/api/schedule/plans/${this.editingPlan.id}`, {method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
+            } else {
+                await adminFetch('/admin/api/schedule/plans', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
+            }
+            this.showCreateModal = false; this.editingPlan = null; this.loadData();
+        },
+        async deletePlan(id) {
+            if(!confirm('确认删除该方案?')) return;
+            const r = await adminFetch(`/admin/api/schedule/plans/${id}`, {method:'DELETE'}); const j = await r.json();
+            if(j.code !== 0) { alert(j.message || '删除失败'); return; }
+            this.loadData();
+        },
+        async openDetail(planId) {
+            const r = await adminFetch(`/admin/api/schedule/plans/${planId}/slots`); const j = await r.json();
+            if(j.code !== 0) return;
+            this.detailPlan = j.data.plan;
+            this.detailSlots = j.data.slots || [];
+            this.showDetailModal = true;
+        },
+        get detailTimeSlots() {
+            const seen = new Set(); const result = [];
+            for(const s of this.detailSlots) { if(!seen.has(s.time_slot)) { seen.add(s.time_slot); result.push(s.time_slot); } }
+            return result;
+        },
+        getSlotData(timeSlot, roomIndex) {
+            let found = this.detailSlots.find(s => s.time_slot === timeSlot && s.room_index === roomIndex);
+            if(!found) {
+                const defaultAnchor = this.detailPlan?.anchor_count > 0 ? 1 : '';
+                found = { time_slot: timeSlot, room_index: roomIndex, slot_status: 'on_air_anchor', anchor_slot: defaultAnchor };
+                this.detailSlots.push(found);
+            }
+            return found;
+        },
+        onSlotStatusChange(timeSlot, roomIndex) {
+            const s = this.getSlotData(timeSlot, roomIndex);
+            if(s.slot_status !== 'on_air_anchor') s.anchor_slot = '';
+        },
+        async saveSlots() {
+            const slots = this.detailSlots.map(s => ({ time_slot:s.time_slot, room_index:s.room_index, slot_status:s.slot_status, anchor_slot:s.anchor_slot || null }));
+            await adminFetch(`/admin/api/schedule/plans/${this.detailPlan.id}/slots`, {method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({slots})});
+            this.showDetailModal = false; this.loadData();
+        }
+    };
+}
+</script>
+{% endblock %}

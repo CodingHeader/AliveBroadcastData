@@ -1,0 +1,153 @@
+{% extends "admin/base.html" %}
+{% block title %}招生团队管理{% endblock %}
+{% block admin_content %}
+<div x-data="recruitTeamsApp()" x-init="loadTeams()" class="space-y-6">
+    <div class="flex items-center justify-between">
+        <h2 class="text-xl font-bold text-gray-800">招生团队管理</h2>
+        <button @click="openCreate()" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 text-sm">+ 新增团队</button>
+    </div>
+
+    <!-- 团队列表 -->
+    <div class="space-y-4">
+        <template x-for="team in teams" :key="team.id">
+            <div class="bg-white rounded-lg shadow-sm p-5">
+                <div class="flex items-center justify-between mb-3">
+                    <div class="flex items-center gap-3">
+                        <h3 class="font-bold text-gray-800" x-text="team.name"></h3>
+                        <span x-show="team.require_password" class="text-xs bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded">需密码</span>
+                        <span x-show="!team.is_active" class="text-xs bg-gray-100 text-gray-500 px-2 py-0.5 rounded">已停用</span>
+                    </div>
+                    <div class="flex gap-2">
+                        <button @click="openEdit(team)" class="text-sm text-blue-600 hover:text-blue-800">编辑</button>
+                        <button @click="deleteTeam(team.id)" class="text-sm text-red-600 hover:text-red-800">删除</button>
+                    </div>
+                </div>
+                <div class="grid grid-cols-2 gap-2 text-sm text-gray-600 mb-3">
+                    <div>密码: <span x-text="team.password || '未设置'" class="font-mono"></span></div>
+                    <div>钉钉: <span x-text="team.dingtalk_webhook ? '已配置' : '未配置'"></span></div>
+                </div>
+                <!-- 员工列表 -->
+                <div class="border-t pt-3">
+                    <div class="text-sm font-medium text-gray-700 mb-2">员工 (<span x-text="team.employees.length"></span>人)</div>
+                    <div class="flex flex-wrap gap-2">
+                        <template x-for="(emp, idx) in team.employees" :key="emp.id">
+                            <span class="inline-flex items-center gap-1 bg-blue-50 text-blue-700 px-2 py-1 rounded text-sm">
+                                <span x-text="emp.name"></span>
+                                <span x-show="emp.dingtalk_phone" class="text-xs text-blue-400" x-text="'@'+emp.dingtalk_phone"></span>
+                                <button @click="openEditEmployee(team, idx)" class="text-blue-500 hover:text-blue-700 ml-1 text-xs" title="编辑员工">✏️</button>
+                            </span>
+                        </template>
+                    </div>
+                </div>
+            </div>
+        </template>
+    </div>
+
+    <!-- 编辑弹窗（必须在 x-data 作用域内） -->
+    <div x-show="showModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" x-cloak @click.self="showModal=false">
+        <div class="bg-white p-6 rounded-lg shadow-xl w-[600px] max-h-[80vh] overflow-y-auto space-y-4">
+            <h3 class="font-bold text-lg" x-text="editingId ? '编辑团队' : '新增团队'"></h3>
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">团队名称</label>
+                <input x-model="form.name" class="form-input w-full" placeholder="如：社招部">
+            </div>
+            <div class="grid grid-cols-2 gap-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">密码</label>
+                    <input x-model="form.password" class="form-input w-full" placeholder="查看线索时需输入">
+                </div>
+                <div class="flex items-end">
+                    <label class="flex items-center gap-2 cursor-pointer">
+                        <input type="checkbox" x-model="form.require_password" class="rounded">
+                        <span class="text-sm text-gray-700">需要密码查看</span>
+                    </label>
+                </div>
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">钉钉Webhook URL</label>
+                <input x-model="form.dingtalk_webhook" class="form-input w-full text-xs" placeholder="https://oapi.dingtalk.com/robot/send?access_token=...">
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">钉钉Secret</label>
+                <input x-model="form.dingtalk_secret" class="form-input w-full" placeholder="SEC...">
+            </div>
+
+            <!-- 员工编辑 -->
+            <div class="border-t pt-4">
+                <div class="flex items-center justify-between mb-2">
+                    <label class="text-sm font-medium text-gray-700">员工列表</label>
+                    <button @click="addEmployee()" class="text-sm text-blue-600 hover:text-blue-800">+ 添加员工</button>
+                </div>
+                <div class="space-y-2">
+                    <template x-for="(emp, idx) in form.employees" :key="idx">
+                        <div class="flex gap-2 items-center employee-row">
+                            <input x-model="emp.name" class="form-input flex-1 min-w-[120px] text-sm py-1" placeholder="姓名">
+                            <input x-model="emp.phone" class="form-input w-32 text-sm py-1" placeholder="手机号">
+                            <input x-model="emp.dingtalk_phone" class="form-input w-32 text-sm py-1" placeholder="钉钉手机号">
+                            <button @click="form.employees.splice(idx,1)" class="text-red-400 hover:text-red-600 text-sm px-1">x</button>
+                        </div>
+                    </template>
+                </div>
+            </div>
+
+            <div class="flex gap-2 pt-2">
+                <button @click="saveTeam()" class="btn-primary">保存</button>
+                <button @click="showModal=false" class="bg-gray-200 px-4 py-2 rounded hover:bg-gray-300 text-sm">取消</button>
+            </div>
+        </div>
+    </div>
+</div>
+<script>
+function recruitTeamsApp() {
+    return {
+        teams: [],
+        showModal: false,
+        editingId: null,
+        editingEmpIdx: null,
+        form: { name: '', password: '', require_password: false, dingtalk_webhook: '', dingtalk_secret: '', employees: [] },
+        async loadTeams() {
+            const resp = await fetch('/admin/api/recruit-teams', {headers:{'Authorization':'Bearer '+localStorage.getItem('admin_token')}});
+            const json = await resp.json();
+            this.teams = json.data || [];
+        },
+        openCreate() {
+            this.editingId = null;
+            this.form = { name: '', password: '', require_password: false, dingtalk_webhook: '', dingtalk_secret: '', employees: [{name:'',phone:'',dingtalk_phone:'',sort_order:0}] };
+            this.showModal = true;
+        },
+        openEdit(team) {
+            this.editingId = team.id;
+            this.form = { name: team.name, password: team.password||'', require_password: team.require_password, dingtalk_webhook: team.dingtalk_webhook||'', dingtalk_secret: team.dingtalk_secret||'', employees: team.employees.map(e=>({name:e.name,phone:e.phone||'',dingtalk_phone:e.dingtalk_phone||'',sort_order:e.sort_order})) };
+            this.showModal = true;
+        },
+        openEditEmployee(team, empIdx) {
+            this.openEdit(team);
+            this.editingEmpIdx = empIdx;
+            this.$nextTick(() => {
+                const el = document.querySelectorAll('.employee-row')[empIdx];
+                if (el) el.scrollIntoView({behavior: 'smooth', block: 'center'});
+            });
+        },
+        addEmployee() {
+            this.form.employees.push({name:'',phone:'',dingtalk_phone:'',sort_order:this.form.employees.length});
+        },
+        async saveTeam() {
+            const url = this.editingId ? `/admin/api/recruit-teams/${this.editingId}` : '/admin/api/recruit-teams';
+            const method = this.editingId ? 'PUT' : 'POST';
+            const resp = await fetch(url, {method, headers:{'Authorization':'Bearer '+localStorage.getItem('admin_token'),'Content-Type':'application/json'}, body:JSON.stringify(this.form)});
+            const json = await resp.json();
+            if (json.code !== 0) { alert(json.message||'操作失败'); return; }
+            this.showModal = false;
+            this.loadTeams();
+        },
+        async deleteTeam(id) {
+            if (!confirm('确定删除该团队？')) return;
+            const resp = await fetch(`/admin/api/recruit-teams/${id}`, {method:'DELETE', headers:{'Authorization':'Bearer '+localStorage.getItem('admin_token')}});
+            const json = await resp.json();
+            if (json.code !== 0) { alert(json.message||'删除失败'); return; }
+            this.loadTeams();
+        }
+    };
+}
+</script>
+{% endblock %}

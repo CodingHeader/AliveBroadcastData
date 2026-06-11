@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>线索领取看板</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <style>
+        [x-cloak] { display: none !important; }
+        .status-unclaimed { @apply bg-yellow-100 text-yellow-800; }
+        .status-following { @apply bg-blue-100 text-blue-800; }
+        .status-deal { @apply bg-green-100 text-green-800; }
+        .status-invalid { @apply bg-gray-100 text-gray-600; }
+    </style>
+</head>
+<body class="bg-gray-50 min-h-screen">
+<div x-data="clueBoardApp()" x-init="loadTeams()" class="max-w-7xl mx-auto p-4 space-y-4">
+    <!-- 头部 -->
+    <div class="flex items-center justify-between">
+        <h1 class="text-2xl font-bold text-gray-800">线索领取看板</h1>
+        <div class="flex items-center gap-3">
+            <select x-model="selectedTeamId" @change="loadAssignments()" class="border rounded px-3 py-1.5 text-sm">
+                <option value="">选择团队</option>
+                <template x-for="t in teams" :key="t.id">
+                    <option :value="t.id" x-text="t.name"></option>
+                </template>
+            </select>
+            <template x-if="currentTeam && currentTeam.require_password">
+                <div class="flex items-center gap-2">
+                    <input x-model="password" type="password" placeholder="输入密码" class="border rounded px-3 py-1.5 text-sm w-32">
+                    <button @click="verifyPassword()" class="bg-blue-600 text-white px-3 py-1.5 rounded text-sm hover:bg-blue-700">验证</button>
+                </div>
+            </template>
+            <button @click="loadAssignments()" class="bg-gray-100 px-3 py-1.5 rounded text-sm hover:bg-gray-200">刷新</button>
+        </div>
+    </div>
+
+    <!-- 密码验证提示 -->
+    <div x-show="currentTeam && currentTeam.require_password && !verified" class="bg-yellow-50 border border-yellow-200 rounded p-4 text-center">
+        <p class="text-yellow-700">该团队需要密码验证，请输入密码后查看线索</p>
+    </div>
+
+    <!-- 状态筛选 -->
+    <div x-show="verified || !currentTeam?.require_password" class="flex gap-2">
+        <template x-for="s in statusOptions" :key="s.value">
+            <button @click="filterStatus = s.value; loadAssignments()"
+                    :class="filterStatus === s.value ? 'bg-blue-600 text-white' : 'bg-white text-gray-700 border'"
+                    class="px-3 py-1 rounded text-sm" x-text="s.label"></button>
+        </template>
+    </div>
+
+    <!-- 线索列表 -->
+    <div x-show="verified || !currentTeam?.require_password" class="bg-white rounded-lg shadow-sm overflow-hidden">
+        <table class="w-full text-sm">
+            <thead class="bg-gray-50">
+                <tr>
+                    <th class="px-3 py-2 text-left">状态</th>
+                    <th class="px-3 py-2 text-left">有效性</th>
+                    <th class="px-3 py-2 text-left">分配时间</th>
+                    <th class="px-3 py-2 text-left">联系方式</th>
+                    <th class="px-3 py-2 text-left">昵称/姓名</th>
+                    <th class="px-3 py-2 text-left">主播</th>
+                    <th class="px-3 py-2 text-left">城市</th>
+                    <th class="px-3 py-2 text-left">留资时间</th>
+                    <th class="px-3 py-2 text-left">分配老师</th>
+                    <th class="px-3 py-2 text-left">微信</th>
+                    <th class="px-3 py-2 text-left">操作</th>
+                </tr>
+            </thead>
+            <tbody>
+                <template x-for="item in assignments" :key="item.id">
+                    <tr class="border-t hover:bg-gray-50">
+                        <td class="px-3 py-2">
+                            <span class="px-2 py-0.5 rounded text-xs"
+                                  :class="{
+                                      'bg-yellow-100 text-yellow-800': item.status === 'unclaimed',
+                                      'bg-blue-100 text-blue-800': item.status === 'following',
+                                      'bg-green-100 text-green-800': item.status === 'deal',
+                                      'bg-gray-100 text-gray-600': item.status === 'invalid',
+                                  }"
+                                  x-text="statusLabel(item.status)"></span>
+                        </td>
+                        <td class="px-3 py-2">
+                            <span class="px-2 py-0.5 rounded text-xs"
+                                  :class="{
+                                      'bg-green-100 text-green-700': item.effective_state === 'effective' || item.effective_state === '1',
+                                      'bg-red-100 text-red-700': item.effective_state === 'ineffective' || item.effective_state === '0',
+                                      'bg-gray-100 text-gray-500': !item.effective_state,
+                                  }"
+                                  x-text="effectiveLabel(item.effective_state)"></span>
+                        </td>
+                        <td class="px-3 py-2 text-xs text-gray-500" x-text="item.assigned_at ? item.assigned_at.substring(5, 16) : '-'"></td>
+                        <td class="px-3 py-2 font-mono">
+                            <template x-if="!currentTeam?.require_password || verified">
+                                <span x-text="item.is_decrypted ? item.phone_decrypted : (item.phone_masked || '未解密')"></span>
+                            </template>
+                            <template x-if="currentTeam?.require_password && !verified">
+                                <button @click="showRevealModal=item" class="text-blue-600 hover:text-blue-800 text-xs">****查看</button>
+                            </template>
+                        </td>
+                        <td class="px-3 py-2" x-text="item.nickname || item.name || '-'"></td>
+                        <td class="px-3 py-2" x-text="item.anchor_names || '-'"></td>
+                        <td class="px-3 py-2" x-text="item.city_name || '-'"></td>
+                        <td class="px-3 py-2 text-xs" x-text="item.create_time_detail || item.lead_time || '-'"></td>
+                        <td class="px-3 py-2" x-text="item.employee_name || '-'"></td>
+                        <td class="px-3 py-2">
+                            <template x-if="!currentTeam?.require_password || verified">
+                                <span x-text="item.weixin || item.weixin_manual || '-'"></span>
+                            </template>
+                            <template x-if="currentTeam?.require_password && !verified">
+                                <button @click="showRevealModal=item" class="text-blue-600 hover:text-blue-800 text-xs">****查看</button>
+                            </template>
+                        </td>
+                        <td class="px-3 py-2">
+                            <button @click="showDetail(item)" class="text-gray-600 hover:text-gray-800 text-xs mr-1">详情</button>
+                            <template x-if="item.status === 'unclaimed'">
+                                <button @click="claimClue(item.id)" class="text-blue-600 hover:text-blue-800 text-xs">领取</button>
+                            </template>
+                            <template x-if="item.status === 'following'">
+                                <button @click="openFeedback(item)" class="text-green-600 hover:text-green-800 text-xs">反馈</button>
+                            </template>
+                        </td>
+                    </tr>
+                </template>
+            </tbody>
+        </table>
+        <div x-show="assignments.length === 0" class="text-center py-8 text-gray-400">暂无数据</div>
+    </div>
+
+    <!-- 详情弹窗 -->
+    <div x-show="showDetailModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" style="display:none" x-cloak @click.self="showDetailModal=false">
+        <div class="bg-white p-5 rounded-lg shadow-xl w-[500px] max-h-[80vh] overflow-y-auto space-y-3">
+            <h3 class="font-bold text-lg">线索详情</h3>
+            <div class="grid grid-cols-2 gap-2 text-sm">
+                <div><span class="text-gray-500">姓名：</span><span x-text="detailData.name || '-'"></span></div>
+                <div><span class="text-gray-500">电话：</span><span x-text="detailData.is_decrypted ? detailData.phone_decrypted : (detailData.phone_masked || '-')"></span></div>
+                <div><span class="text-gray-500">微信：</span><span x-text="detailData.weixin || '-'"></span></div>
+                <div><span class="text-gray-500">城市：</span><span x-text="detailData.city_name || '-'"></span></div>
+                <div><span class="text-gray-500">主播：</span><span x-text="detailData.anchor_names || '-'"></span></div>
+                <div><span class="text-gray-500">留资时间：</span><span x-text="detailData.create_time_detail || '-'"></span></div>
+                <div><span class="text-gray-500">来源：</span><span x-text="detailData.product_name || '-'"></span></div>
+                <div><span class="text-gray-500">推广：</span><span x-text="detailData.promotion_name || '-'"></span></div>
+            </div>
+            <div x-show="detailData.notes" class="text-sm border-t pt-2">
+                <span class="text-gray-500">备注：</span><span x-text="detailData.notes"></span>
+            </div>
+            <div x-show="detailData.comments && detailData.comments.length > 0" class="text-sm border-t pt-2">
+                <div class="text-gray-500 mb-1">用户评论：</div>
+                <template x-for="(c, i) in (detailData.comments || [])" :key="i">
+                    <div class="bg-gray-50 rounded p-2 mb-1">
+                        <span x-text="c.content"></span>
+                        <span x-show="c.time" class="text-xs text-gray-400 ml-2" x-text="c.time"></span>
+                        <span x-show="c.has_lead" class="text-xs text-green-600 ml-1">已留资</span>
+                    </div>
+                </template>
+            </div>
+            <div x-show="detailData.feedback" class="text-sm border-t pt-2">
+                <span class="text-gray-500">反馈：</span><span x-text="detailData.feedback"></span>
+            </div>
+            <div x-show="detailData.remark" class="text-sm">
+                <span class="text-gray-500">备注：</span><span x-text="detailData.remark"></span>
+            </div>
+            <div class="flex justify-end">
+                <button @click="showDetailModal=false" class="bg-gray-200 px-4 py-1.5 rounded text-sm hover:bg-gray-300">关闭</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 反馈弹窗 -->
+    <div x-show="showFeedback" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" style="display:none" x-cloak>
+        <div class="bg-white p-5 rounded-lg shadow-xl w-[400px] space-y-3">
+            <h3 class="font-bold text-lg">线索反馈</h3>
+            <div>
+                <label class="block text-sm text-gray-700 mb-1">跟进状态</label>
+                <select x-model="feedbackForm.status" class="border rounded w-full px-3 py-1.5 text-sm">
+                    <option value="following">跟进中</option>
+                    <option value="deal">已成交</option>
+                    <option value="invalid">无效线索</option>
+                </select>
+            </div>
+            <div>
+                <label class="block text-sm text-gray-700 mb-1">反馈内容</label>
+                <textarea x-model="feedbackForm.feedback" class="border rounded w-full px-3 py-1.5 text-sm" rows="3" placeholder="填写跟进情况..."></textarea>
+            </div>
+            <div>
+                <label class="block text-sm text-gray-700 mb-1">备注</label>
+                <input x-model="feedbackForm.remark" class="border rounded w-full px-3 py-1.5 text-sm" placeholder="备注信息">
+            </div>
+            <div class="flex gap-2">
+                <button @click="submitFeedback()" class="bg-blue-600 text-white px-4 py-1.5 rounded text-sm hover:bg-blue-700">提交</button>
+                <button @click="showFeedback=false" class="bg-gray-200 px-4 py-1.5 rounded text-sm hover:bg-gray-300">取消</button>
+            </div>
+        </div>
+    </div>
+    <!-- 逐条查看密码验证弹窗 -->
+    <div x-show="showRevealModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" style="display:none" x-cloak @click.self="showRevealModal=null">
+        <div class="bg-white p-5 rounded-lg shadow-xl w-[360px] space-y-3">
+            <h3 class="font-bold text-lg">查看敏感信息</h3>
+            <p class="text-sm text-gray-500">请输入团队密码查看该条线索的电话和微信</p>
+            <input x-model="revealPassword" type="password" class="border rounded w-full px-3 py-1.5 text-sm" placeholder="团队密码" @keyup.enter="revealItem()">
+            <div class="flex gap-2 justify-end">
+                <button @click="revealItem()" class="bg-blue-600 text-white px-4 py-1.5 rounded text-sm hover:bg-blue-700">验证</button>
+                <button @click="showRevealModal=null" class="bg-gray-200 px-4 py-1.5 rounded text-sm hover:bg-gray-300">取消</button>
+            </div>
+        </div>
+    </div>
+</div>
+<script>
+function clueBoardApp() {
+    return {
+        teams: [],
+        selectedTeamId: '',
+        currentTeam: null,
+        password: '',
+        verified: false,
+        assignments: [],
+        filterStatus: '',
+        showRevealModal: null,
+        revealPassword: '',
+        statusOptions: [
+            {value: '', label: '全部'},
+            {value: 'unclaimed', label: '待领取'},
+            {value: 'following', label: '跟进中'},
+            {value: 'deal', label: '已成交'},
+            {value: 'invalid', label: '无效'},
+        ],
+        showFeedback: false,
+        feedbackForm: {status: 'following', feedback: '', remark: ''},
+        feedbackAssignmentId: null,
+        showDetailModal: false,
+        detailData: {},
+
+        async loadTeams() {
+            const resp = await fetch('/api/clue-board/teams');
+            const json = await resp.json();
+            this.teams = json.data || [];
+        },
+        async verifyPassword() {
+            const resp = await fetch('/api/clue-board/verify', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({team_name: this.currentTeam?.name || '', password: this.password})
+            });
+            const json = await resp.json();
+            if (json.code === 0) {
+                this.verified = true;
+                this.loadAssignments();
+            } else {
+                alert(json.message || '验证失败');
+            }
+        },
+        async loadAssignments() {
+            if (!this.selectedTeamId) { this.assignments = []; return; }
+            this.currentTeam = this.teams.find(t => t.id == this.selectedTeamId);
+            if (this.currentTeam?.require_password && !this.verified) { this.assignments = []; return; }
+            const params = new URLSearchParams({team_id: this.selectedTeamId, size: '100'});
+            if (this.filterStatus) params.set('status', this.filterStatus);
+            const resp = await fetch(`/api/clue-board/assignments?${params}`);
+            const json = await resp.json();
+            this.assignments = json.data?.items || [];
+        },
+        async claimClue(assignmentId) {
+            const resp = await fetch(`/api/clue-board/claim/${assignmentId}`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({})
+            });
+            const json = await resp.json();
+            if (json.code === 0) {
+                this.loadAssignments();
+            } else {
+                alert(json.message || '领取失败');
+            }
+        },
+        openFeedback(item) {
+            this.feedbackAssignmentId = item.id;
+            this.feedbackForm = {status: item.status, feedback: item.feedback || '', remark: item.remark || ''};
+            this.showFeedback = true;
+        },
+        async submitFeedback() {
+            const resp = await fetch(`/api/clue-board/feedback/${this.feedbackAssignmentId}`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(this.feedbackForm)
+            });
+            const json = await resp.json();
+            if (json.code === 0) {
+                this.showFeedback = false;
+                this.loadAssignments();
+            } else {
+                alert(json.message || '提交失败');
+            }
+        },
+        statusLabel(s) {
+            return {unclaimed: '待领取', following: '跟进中', deal: '已成交', invalid: '无效'}[s] || s;
+        },
+        effectiveLabel(s) {
+            if (!s) return '未知';
+            if (s === 'effective' || s === '1') return '有效';
+            if (s === 'ineffective' || s === '0') return '无效';
+            return s;
+        },
+        async revealItem() {
+            if (!this.revealPassword || !this.showRevealModal) return;
+            const resp = await fetch('/api/clue-board/verify', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({team_name: this.currentTeam?.name || '', password: this.revealPassword})
+            });
+            const json = await resp.json();
+            if (json.code === 0) {
+                this.verified = true;
+                this.showRevealModal = null;
+                this.revealPassword = '';
+            } else {
+                alert(json.message || '密码错误');
+            }
+        },
+        async showDetail(item) {
+            const resp = await fetch(`/api/clue-board/detail/${item.id}`);
+            const json = await resp.json();
+            if (json.code === 0) {
+                this.detailData = json.data;
+                this.showDetailModal = true;
+            } else {
+                alert(json.message || '获取详情失败');
+            }
+        }
+    };
+}
+</script>
+</body>
+</html>

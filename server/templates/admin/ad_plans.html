@@ -1,0 +1,217 @@
+{% extends "admin/base.html" %}
+{% block title %}投流计划管理{% endblock %}
+{% block admin_content %}
+<div x-data="adPlansApp()" x-init="loadData()" class="space-y-6">
+    <div class="flex items-center justify-between">
+        <h2 class="text-xl font-bold text-gray-800">投流计划管理</h2>
+        <button @click="openCreate()" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 text-sm">+ 新增计划</button>
+    </div>
+
+    <!-- 计划列表 -->
+    <div class="bg-white rounded-lg shadow-sm overflow-hidden">
+        <table class="w-full text-sm">
+            <thead class="bg-gray-50">
+                <tr>
+                    <th class="px-3 py-2 text-left">计划名称</th>
+                    <th class="px-3 py-2 text-left">抖音计划ID</th>
+                    <th class="px-3 py-2 text-left">关联账户</th>
+                    <th class="px-3 py-2 text-left">出价</th>
+                    <th class="px-3 py-2 text-left">状态</th>
+                    <th class="px-3 py-2 text-left">日期范围</th>
+                    <th class="px-3 py-2 text-left">总花费</th>
+                    <th class="px-3 py-2 text-left">总转化</th>
+                    <th class="px-3 py-2 text-left">操作</th>
+                </tr>
+            </thead>
+            <tbody>
+                <template x-for="p in plans" :key="p.id">
+                    <tr class="border-t hover:bg-gray-50">
+                        <td class="px-3 py-2 font-medium" x-text="p.plan_name"></td>
+                        <td class="px-3 py-2 font-mono text-xs" x-text="p.plan_id || '-'"></td>
+                        <td class="px-3 py-2" x-text="p.account_name || '-'"></td>
+                        <td class="px-3 py-2" x-text="p.bid_price ? '¥'+p.bid_price : '-'"></td>
+                        <td class="px-3 py-2">
+                            <span class="px-2 py-0.5 rounded text-xs"
+                                  :class="p.status==='active' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'"
+                                  x-text="p.status==='active' ? '运行中' : '已暂停'"></span>
+                        </td>
+                        <td class="px-3 py-2 text-xs" x-text="(p.start_date||'') + ' ~ ' + (p.end_date||'')"></td>
+                        <td class="px-3 py-2 font-mono" x-text="'¥'+p.total_spend.toFixed(0)"></td>
+                        <td class="px-3 py-2" x-text="p.total_result"></td>
+                        <td class="px-3 py-2 flex gap-2">
+                            <button @click="openEdit(p)" class="text-blue-600 hover:text-blue-800 text-xs">编辑</button>
+                            <button @click="openSpends(p)" class="text-green-600 hover:text-green-800 text-xs">花费</button>
+                            <button @click="deletePlan(p.id)" class="text-red-600 hover:text-red-800 text-xs">删除</button>
+                        </td>
+                    </tr>
+                </template>
+            </tbody>
+        </table>
+        <div x-show="plans.length===0" class="text-center py-8 text-gray-400">暂无投流计划</div>
+    </div>
+
+    <!-- 新增/编辑弹窗 -->
+    <div x-show="showModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" x-cloak @click.self="showModal=false">
+        <div class="bg-white p-6 rounded-lg shadow-xl w-[500px] space-y-4">
+            <h3 class="font-bold text-lg" x-text="editingId ? '编辑计划' : '新增计划'"></h3>
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">计划名称</label>
+                <input x-model="form.plan_name" class="form-input w-full" placeholder="如：暑期招生计划">
+            </div>
+            <div class="grid grid-cols-2 gap-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">关联账户</label>
+                    <select x-model="form.account_id" class="form-input w-full">
+                        <template x-for="a in accounts" :key="a.id">
+                            <option :value="a.id" x-text="a.account_name"></option>
+                        </template>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">抖音计划ID</label>
+                    <input x-model="form.plan_id" class="form-input w-full" placeholder="可选">
+                </div>
+            </div>
+            <div class="grid grid-cols-2 gap-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">出价(元)</label>
+                    <input x-model="form.bid_price" type="number" step="0.01" class="form-input w-full">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">状态</label>
+                    <select x-model="form.status" class="form-input w-full">
+                        <option value="active">运行中</option>
+                        <option value="paused">已暂停</option>
+                    </select>
+                </div>
+            </div>
+            <div class="grid grid-cols-2 gap-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">开始日期</label>
+                    <input x-model="form.start_date" type="date" class="form-input w-full">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">结束日期</label>
+                    <input x-model="form.end_date" type="date" class="form-input w-full">
+                </div>
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">备注</label>
+                <textarea x-model="form.notes" class="form-input w-full" rows="2"></textarea>
+            </div>
+            <div class="flex gap-2 pt-2">
+                <button @click="savePlan()" class="btn-primary">保存</button>
+                <button @click="showModal=false" class="bg-gray-200 px-4 py-2 rounded hover:bg-gray-300 text-sm">取消</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 花费记录弹窗 -->
+    <div x-show="showSpends" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" x-cloak @click.self="showSpends=false">
+        <div class="bg-white p-6 rounded-lg shadow-xl w-[650px] max-h-[80vh] overflow-y-auto space-y-4">
+            <div class="flex items-center justify-between">
+                <h3 class="font-bold text-lg">花费记录 - <span x-text="currentPlan?.plan_name || ''"></span></h3>
+                <button @click="showSpends=false" class="text-gray-400 hover:text-gray-600">x</button>
+            </div>
+            <div class="flex gap-2 items-end">
+                <div>
+                    <label class="block text-xs text-gray-500">日期</label>
+                    <input x-model="spendForm.record_date" type="date" class="form-input w-36 text-sm py-1">
+                </div>
+                <div>
+                    <label class="block text-xs text-gray-500">花费</label>
+                    <input x-model="spendForm.spend_amount" type="number" step="0.01" class="form-input w-24 text-sm py-1">
+                </div>
+                <div>
+                    <label class="block text-xs text-gray-500">转化数</label>
+                    <input x-model="spendForm.result_count" type="number" class="form-input w-20 text-sm py-1">
+                </div>
+                <button @click="addSpend()" class="btn-primary text-sm py-1">添加</button>
+            </div>
+            <table class="w-full text-sm">
+                <thead class="bg-gray-50">
+                    <tr><th class="px-2 py-1 text-left">日期</th><th class="px-2 py-1">花费</th><th class="px-2 py-1">转化</th><th class="px-2 py-1">操作</th></tr>
+                </thead>
+                <tbody>
+                    <template x-for="s in spends" :key="s.id">
+                        <tr class="border-t">
+                            <td class="px-2 py-1" x-text="s.record_date"></td>
+                            <td class="px-2 py-1 text-right" x-text="'¥'+s.spend_amount"></td>
+                            <td class="px-2 py-1 text-right" x-text="s.result_count"></td>
+                            <td class="px-2 py-1"><button @click="deleteSpend(s.id)" class="text-red-500 text-xs">删除</button></td>
+                        </tr>
+                    </template>
+                </tbody>
+            </table>
+            <div x-show="spends.length===0" class="text-center py-4 text-gray-400 text-sm">暂无花费记录</div>
+        </div>
+    </div>
+</div>
+<script>
+function adPlansApp() {
+    return {
+        plans: [], accounts: [], showModal: false, showSpends: false,
+        editingId: null, currentPlan: null, spends: [],
+        form: {plan_name:'', account_id:'', plan_id:'', bid_price:'', status:'active', start_date:'', end_date:'', notes:''},
+        spendForm: {record_date: new Date().toISOString().slice(0,10), spend_amount:0, result_count:0},
+
+        async loadData() {
+            const token = localStorage.getItem('admin_token');
+            const headers = {'Authorization': 'Bearer ' + token};
+            const [pResp, aResp] = await Promise.all([
+                fetch('/admin/api/ad-plans', {headers}), fetch('/admin/api/ad-accounts', {headers})
+            ]);
+            this.plans = (await pResp.json()).data || [];
+            this.accounts = (await aResp.json()).data || [];
+        },
+        openCreate() {
+            this.editingId = null;
+            this.form = {plan_name:'', account_id:this.accounts[0]?.id||'', plan_id:'', bid_price:'', status:'active', start_date:'', end_date:'', notes:''};
+            this.showModal = true;
+        },
+        openEdit(p) {
+            this.editingId = p.id;
+            this.form = {...p};
+            this.showModal = true;
+        },
+        async savePlan() {
+            const token = localStorage.getItem('admin_token');
+            const url = this.editingId ? `/admin/api/ad-plans/${this.editingId}` : '/admin/api/ad-plans';
+            const method = this.editingId ? 'PUT' : 'POST';
+            const resp = await fetch(url, {method, headers:{'Content-Type':'application/json', 'Authorization': 'Bearer ' + token}, body:JSON.stringify(this.form)});
+            const json = await resp.json();
+            if (json.code === 0) { this.showModal = false; this.loadData(); }
+            else alert(json.message || '保存失败');
+        },
+        async deletePlan(id) {
+            if (!confirm('确定删除该计划？')) return;
+            const token = localStorage.getItem('admin_token');
+            await fetch(`/admin/api/ad-plans/${id}`, {method:'DELETE', headers:{'Authorization': 'Bearer ' + token}});
+            this.loadData();
+        },
+        async openSpends(p) {
+            this.currentPlan = p;
+            this.showSpends = true;
+            const token = localStorage.getItem('admin_token');
+            const resp = await fetch(`/admin/api/ad-plan-spends?plan_id=${p.id}&size=100`, {headers:{'Authorization': 'Bearer ' + token}});
+            this.spends = (await resp.json()).data?.items || [];
+        },
+        async addSpend() {
+            if (!this.currentPlan) return;
+            const token = localStorage.getItem('admin_token');
+            const resp = await fetch('/admin/api/ad-plan-spends', {
+                method:'POST', headers:{'Content-Type':'application/json', 'Authorization': 'Bearer ' + token},
+                body:JSON.stringify({plan_id:this.currentPlan.id, ...this.spendForm})
+            });
+            const json = await resp.json();
+            if (json.code===0) { this.spendForm = {record_date:new Date().toISOString().slice(0,10), spend_amount:0, result_count:0}; this.openSpends(this.currentPlan); }
+        },
+        async deleteSpend(id) {
+            const token = localStorage.getItem('admin_token');
+            await fetch(`/admin/api/ad-plan-spends/${id}`, {method:'DELETE', headers:{'Authorization': 'Bearer ' + token}});
+            this.openSpends(this.currentPlan);
+        }
+    };
+}
+</script>
+{% endblock %}

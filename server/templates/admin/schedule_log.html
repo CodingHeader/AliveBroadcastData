@@ -1,0 +1,324 @@
+{% extends "admin/base.html" %}
+{% block admin_content %}
+<div x-data="scheduleLogApp()" x-init="init()" class="space-y-4">
+    <div class="flex items-center justify-between bg-white rounded-lg p-4 shadow-sm">
+        <button @click="navigate(-1)" class="px-4 py-2 bg-gray-100 rounded-lg hover:bg-gray-200 flex items-center gap-1">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
+            前一天
+        </button>
+        <div class="flex items-center gap-3">
+            <input type="date" x-model="currentDate" @change="loadLog()" class="border rounded-lg px-3 py-2 text-center text-lg font-bold">
+            <span x-show="isToday" class="px-2 py-1 bg-blue-100 text-blue-700 text-xs rounded-full font-bold">今天</span>
+        </div>
+        <button @click="navigate(1)" class="px-4 py-2 bg-gray-100 rounded-lg hover:bg-gray-200 flex items-center gap-1">
+            后一天
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+        </button>
+    </div>
+
+    <div x-show="!logData" class="bg-white rounded-lg p-8 shadow-sm text-center text-gray-400">
+        <p class="text-lg">该日无排班方案</p>
+        <p class="text-sm mt-1">请先在「排班日历」中为此日绑定排班方案</p>
+    </div>
+
+    <template x-if="logData">
+        <div class="space-y-3">
+            <div class="bg-white rounded-lg p-4 shadow-sm">
+                <div class="flex items-center gap-3 mb-3">
+                    <span class="text-lg font-bold" x-text="logData.plan.name"></span>
+                    <span class="text-sm text-gray-500" x-text="logData.plan.start_time + ' - ' + logData.plan.end_time"></span>
+                    <span class="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded" x-text="logData.plan.room_count + '个直播间'"></span>
+                    <span class="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded" x-text="'粒度: ' + logData.plan.time_granularity + '分'"></span>
+                    <button @click="showOvertimeModal()" class="ml-auto px-3 py-1 bg-orange-500 text-white text-sm rounded-lg hover:bg-orange-600">临时加班</button>
+                </div>
+                <div class="relative" x-ref="timeline">
+                    <template x-for="roomIdx in logData.plan.room_count" :key="roomIdx">
+                        <div class="mb-2">
+                            <div class="text-xs text-gray-500 mb-1 font-bold" x-text="'直播间' + roomIdx"></div>
+                            <div class="flex rounded-lg overflow-hidden border">
+                                <template x-for="slot in roomSlots(roomIdx)" :key="slot.time_slot + '-' + slot.room_index">
+                                    <div class="flex-1 text-center px-1 py-2 text-xs border-r last:border-r-0 cursor-pointer hover:opacity-80 relative"
+                                        :class="statusClass(slot.slot_status)"
+                                        :title="slot.time_slot + ' - ' + anchorName(slot)"
+                                        @click="showSlotDetail(slot)">
+                                        <div class="font-bold" x-text="slot.time_slot"></div>
+                                        <div class="mt-1" x-show="slot.slot_status === 'on_air_anchor' && anchorName(slot)">
+                                            <span class="bg-white bg-opacity-60 px-1.5 py-0.5 rounded text-xs font-medium" x-text="anchorName(slot)"></span>
+                                        </div>
+                                        <div x-show="slot.slot_status === 'off_air'" class="text-gray-400 text-xs">关播</div>
+                                        <div x-show="slot.slot_status === 'on_air_empty'" class="text-gray-400 text-xs">空播</div>
+                                    </div>
+                                </template>
+                            </div>
+                        </div>
+                    </template>
+                    <div x-show="isToday && currentMinutes" class="absolute top-0 bottom-0 w-0.5 bg-red-500 z-10" 
+                        :style="'left: ' + timePosition(currentMinutes) + '%'">
+                        <div class="absolute -top-5 left-1/2 -translate-x-1/2 text-xs text-red-500 font-bold">现在</div>
+                    </div>
+                </div>
+            </div>
+
+            <div x-show="logData.sessions && logData.sessions.length > 0" class="bg-white rounded-lg p-4 shadow-sm">
+                <h3 class="text-sm font-bold text-gray-700 mb-2">当日场次</h3>
+                <div class="space-y-1">
+                    <template x-for="s in logData.sessions" :key="s.id">
+                        <div class="flex items-center gap-3 text-sm bg-gray-50 rounded px-3 py-2">
+                            <span class="text-gray-500" x-text="s.start_time"></span>
+                            <span class="text-gray-300">—</span>
+                            <span class="text-gray-500" x-text="s.end_time || '进行中'"></span>
+                            <span class="text-blue-600 font-medium" x-text="s.title || '未命名场次'"></span>
+                        </div>
+                    </template>
+                </div>
+            </div>
+        </div>
+    </template>
+
+    <div x-show="logData && !logData.sessions" class="bg-yellow-50 rounded-lg p-4 shadow-sm text-sm text-yellow-700">
+        当日无直播场次数据。排班方案已绑定，但油猴脚本尚未采集到该日数据。
+    </div>
+
+    <div x-show="showModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" @click.self="showModal = false">
+        <div class="bg-white rounded-xl p-6 w-96 shadow-2xl">
+            <h3 class="text-lg font-bold mb-4">时段详情</h3>
+            <div class="space-y-3 text-sm">
+                <div><span class="text-gray-500">时段：</span><span class="font-medium" x-text="detailSlot?.time_slot"></span></div>
+                <div><span class="text-gray-500">状态：</span><span class="font-medium" x-text="statusLabel(detailSlot?.slot_status)"></span></div>
+                <div x-show="detailSlot?.slot_status === 'on_air_anchor'"><span class="text-gray-500">主播：</span><span class="font-medium" x-text="(detailSlot && anchorName(detailSlot)) || '未分配'"></span></div>
+                <div x-show="detailSlot?.anchor_slot != null"><span class="text-gray-500">主播位：</span><span class="font-medium" x-text="'主播' + (detailSlot?.anchor_slot ?? '')"></span></div>
+            </div>
+            <button @click="showModal = false" class="mt-4 w-full py-2 bg-gray-100 rounded-lg hover:bg-gray-200">关闭</button>
+        </div>
+    </div>
+
+    <!-- 临时加班弹窗 -->
+    <div x-show="overtimeModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" @click.self="overtimeModal = false" x-cloak>
+        <div class="bg-white rounded-xl p-6 w-[420px] shadow-2xl space-y-4">
+            <h3 class="text-lg font-bold">临时加班</h3>
+            <p class="text-sm text-gray-500">为当日排班添加额外的直播时段（开播有主播）</p>
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">直播间</label>
+                <select x-model="overtimeForm.room_index" class="w-full border rounded-lg px-3 py-2">
+                    <template x-for="r in (logData?.plan?.room_count || 1)" :key="r">
+                        <option :value="r" x-text="'直播间' + r"></option>
+                    </template>
+                </select>
+            </div>
+            <div class="grid grid-cols-2 gap-3">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">开始时间</label>
+                    <input type="time" x-model="overtimeForm.start_time" class="w-full border rounded-lg px-3 py-2">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">结束时间</label>
+                    <input type="time" x-model="overtimeForm.end_time" class="w-full border rounded-lg px-3 py-2">
+                </div>
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">主播位</label>
+                <select x-model="overtimeForm.anchor_slot" class="w-full border rounded-lg px-3 py-2">
+                    <template x-for="a in (logData?.plan?.anchor_count || 1)" :key="a">
+                        <option :value="a" x-text="'主播' + a + (logData?.anchor_mapping?.[a] ? ' (' + logData.anchor_mapping[a].name + ')' : '')"></option>
+                    </template>
+                </select>
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">备注</label>
+                <input type="text" x-model="overtimeForm.notes" placeholder="如：人气高临时加班" class="w-full border rounded-lg px-3 py-2">
+            </div>
+            <div class="flex gap-2">
+                <button @click="saveOvertime()" class="flex-1 py-2 bg-orange-500 text-white rounded-lg hover:bg-orange-600">确认加班</button>
+                <button @click="overtimeModal = false" class="flex-1 py-2 bg-gray-100 rounded-lg hover:bg-gray-200">取消</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+function scheduleLogApp() {
+    return {
+        currentDate: new Date().toISOString().slice(0, 10),
+        logData: null,
+        showModal: false,
+        detailSlot: null,
+        isToday: true,
+        currentMinutes: null,
+        timer: null,
+        overtimeModal: false,
+        overtimeForm: { room_index: 1, start_time: '', end_time: '', anchor_slot: 1, notes: '' },
+
+        get todayStr() { return new Date().toISOString().slice(0, 10); },
+
+        init() {
+            this.loadLog();
+            this.timer = setInterval(() => this.updateTimeMarker(), 30000);
+        },
+
+        async loadLog() {
+            this.isToday = this.currentDate === this.todayStr;
+            const r = await adminFetch('/admin/api/schedule/log?date=' + this.currentDate);
+            const j = await r.json();
+            this.logData = j.data || null;
+            this.updateTimeMarker();
+        },
+
+        updateTimeMarker() {
+            if (this.isToday) {
+                const now = new Date();
+                this.currentMinutes = now.getHours() * 60 + now.getMinutes();
+            } else {
+                this.currentMinutes = null;
+            }
+        },
+
+        navigate(delta) {
+            const d = new Date(this.currentDate);
+            d.setDate(d.getDate() + delta);
+            this.currentDate = d.toISOString().slice(0, 10);
+            this.loadLog();
+        },
+
+        roomSlots(roomIdx) {
+            if (!this.logData) return [];
+            const regular = this.logData.slots.filter(s => s.room_index === roomIdx);
+            const overtime = (this.logData.overtime_slots || []).filter(s => s.room_index === roomIdx);
+            // 加班时段覆盖同time_slot的计划时段，不在计划中的加班时段追加
+            const overtimeKeys = new Set(overtime.map(s => s.time_slot));
+            const deduped = regular.map(s => overtimeKeys.has(s.time_slot)
+                ? overtime.find(o => o.time_slot === s.time_slot) : s);
+            const extraOnly = overtime.filter(s => !regular.some(r => r.time_slot === s.time_slot));
+            const all = [...deduped, ...extraOnly];
+            all.sort((a, b) => {
+                const aMin = this.parseTime(a.time_slot.split('-')[0]);
+                const bMin = this.parseTime(b.time_slot.split('-')[0]);
+                return aMin - bMin;
+            });
+            return all;
+        },
+
+        anchorName(slot) {
+            if (!this.logData || slot.anchor_slot == null) return null;
+            const mapping = this.logData.anchor_mapping;
+            const a = mapping[slot.anchor_slot];
+            return a ? a.name : null;
+        },
+
+        statusClass(status) {
+            const map = {
+                'on_air_anchor': 'bg-green-100 text-green-800',
+                'off_air': 'bg-gray-100 text-gray-500',
+                'on_air_empty': 'bg-yellow-100 text-yellow-700'
+            };
+            return map[status] || 'bg-gray-50';
+        },
+
+        statusLabel(status) {
+            const map = {
+                'on_air_anchor': '开播有主播',
+                'off_air': '关播休息',
+                'on_air_empty': '开播无主播'
+            };
+            return map[status] || status;
+        },
+
+        showSlotDetail(slot) {
+            this.detailSlot = Object.assign({}, slot);
+            this.showModal = true;
+        },
+
+        showOvertimeModal() {
+            if (!this.logData) return;
+            const plan = this.logData.plan;
+            // 默认加班时间：原方案结束时间之后1小时
+            this.overtimeForm = {
+                room_index: 1,
+                start_time: plan.end_time,
+                end_time: this.addHour(plan.end_time),
+                anchor_slot: 1,
+                notes: ''
+            };
+            this.overtimeModal = true;
+        },
+
+        addHour(timeStr) {
+            const parts = timeStr.split(':');
+            let h = parseInt(parts[0]) + 1;
+            const m = parts[1] || '00';
+            if (h >= 24) h = h - 24;
+            return String(h).padStart(2, '0') + ':' + m;
+        },
+
+        async saveOvertime() {
+            const form = this.overtimeForm;
+            if (!form.start_time || !form.end_time) { alert('请填写开始和结束时间'); return; }
+            const gran = this.logData.plan.time_granularity || 60;
+            const startMin = this.parseTime(form.start_time);
+            let endMin = this.parseTime(form.end_time);
+            if (endMin <= startMin) endMin += 1440;
+            // 按粒度生成时段slot
+            const newSlots = [];
+            let cur = startMin;
+            while (cur < endMin) {
+                const next = Math.min(cur + gran, endMin);
+                const sh = String(Math.floor(cur / 60) % 24).padStart(2, '0');
+                const sm = String(cur % 60).padStart(2, '0');
+                const eh = String(Math.floor(next / 60) % 24).padStart(2, '0');
+                const em = String(next % 60).padStart(2, '0');
+                newSlots.push({
+                    time_slot: sh + ':' + sm + '-' + eh + ':' + em,
+                    room_index: form.room_index,
+                    slot_status: 'on_air_anchor',
+                    anchor_slot: form.anchor_slot
+                });
+                cur = next;
+            }
+            // 调用API保存到当日排班绑定
+            const binding = this.logData.binding;
+            if (!binding) { alert('未找到排班绑定信息'); return; }
+            // 合并新slots到现有slots（去重：相同time_slot+room_index的用新slot替换）
+            const existingSlots = (this.logData.slots || []).filter(s => {
+                return !newSlots.some(ns => ns.time_slot === s.time_slot && ns.room_index === s.room_index);
+            });
+            const allSlots = [...existingSlots, ...newSlots];
+            const resp = await adminFetch('/admin/api/schedule/bindings/' + binding.id + '/slots', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ slots: allSlots.map(s => ({
+                    time_slot: s.time_slot, room_index: s.room_index,
+                    slot_status: s.slot_status, anchor_slot: s.anchor_slot || null,
+                    isNew: newSlots.some(ns => ns.time_slot === s.time_slot && ns.room_index === s.room_index)
+                }))})
+            });
+            const json = await resp.json();
+            if (json.code === 0) {
+                this.overtimeModal = false;
+                this.loadLog();
+            } else {
+                alert(json.message || '保存失败');
+            }
+        },
+
+        timePosition(minutes) {
+            const plan = this.logData?.plan;
+            if (!plan) return 0;
+            const startMin = this.parseTime(plan.start_time);
+            let endMin = this.parseTime(plan.end_time);
+            if (endMin <= startMin) endMin += 1440;
+            const total = endMin - startMin;
+            if (total <= 0) return 0;
+            return ((minutes - startMin) / total) * 100;
+        },
+
+        parseTime(t) {
+            const parts = t.split(':');
+            return parseInt(parts[0]) * 60 + parseInt(parts[1] || '0');
+        }
+    };
+}
+</script>
+
+<style>
+[x-cloak] { display: none !important; }
+</style>
+{% endblock %}

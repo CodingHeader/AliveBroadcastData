@@ -1,0 +1,173 @@
+{% extends "base.html" %}
+{% block title %}主播工作时间统计{% endblock %}
+{% block content %}
+<div x-data="anchorStatsApp()" x-init="loadData()" class="space-y-6">
+    <div class="flex items-center justify-between">
+        <h1 class="page-title">主播工作时间统计</h1>
+        <div class="flex items-center gap-3">
+            <input type="date" x-model="dateFrom" @change="loadData()" class="form-input w-36 text-sm">
+            <span class="text-gray-400">~</span>
+            <input type="date" x-model="dateTo" @change="loadData()" class="form-input w-36 text-sm">
+            <button @click="setThisMonth()" class="text-sm text-blue-600 hover:text-blue-800">本月</button>
+            <button @click="setLastMonth()" class="text-sm text-blue-600 hover:text-blue-800">上月</button>
+            <div class="border-l pl-3 flex items-center gap-2">
+                <span class="text-sm text-gray-600">有效线索</span>
+                <button @click="showEffective = !showEffective; renderChart()"
+                        :class="showEffective ? 'bg-teal-500' : 'bg-gray-300'"
+                        class="relative w-10 h-5 rounded-full transition-colors duration-200 focus:outline-none">
+                    <span :class="showEffective ? 'translate-x-5' : 'translate-x-0'"
+                          class="inline-block w-4 h-4 bg-white rounded-full shadow transform transition-transform duration-200 mt-0.5 ml-0.5"></span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 汇总卡片 -->
+    <div class="grid gap-4" :class="showEffective ? 'grid-cols-5' : 'grid-cols-4'">
+        <div class="kpi-card border-l-blue-500">
+            <div class="text-sm text-gray-500">主播人数</div>
+            <div class="text-2xl font-bold" x-text="anchors.length"></div>
+        </div>
+        <div class="kpi-card border-l-green-500">
+            <div class="text-sm text-gray-500">总工作时长</div>
+            <div class="text-2xl font-bold" x-text="totalHours + 'h'"></div>
+        </div>
+        <div class="kpi-card border-l-orange-500">
+            <div class="text-sm text-gray-500">总线索数</div>
+            <div class="text-2xl font-bold" x-text="totalLeads"></div>
+        </div>
+        <div class="kpi-card border-l-purple-500">
+            <div class="text-sm text-gray-500">人均时长</div>
+            <div class="text-2xl font-bold" x-text="anchors.length ? (totalHours / anchors.length).toFixed(1) + 'h' : '-'"></div>
+        </div>
+        <template x-if="showEffective">
+            <div class="kpi-card border-l-teal-500">
+                <div class="text-sm text-gray-500">有效线索率</div>
+                <div class="text-2xl font-bold" x-text="effectiveRate + '%'"></div>
+            </div>
+        </template>
+    </div>
+
+    <!-- 图表 -->
+    <div class="card">
+        <div id="hoursChart" style="height:350px"></div>
+    </div>
+
+    <!-- 表格 -->
+    <div class="card overflow-x-auto">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>主播</th>
+                    <th>性别</th>
+                    <th>风格</th>
+                    <th>场次数</th>
+                    <th>总时长(h)</th>
+                    <th>场均时长(h)</th>
+                    <th>总线索</th>
+                    <th>场均线索</th>
+                    <th>总消耗</th>
+                    <th>成单数</th>
+                    <th>成单率</th>
+                    <th x-show="showEffective">有效线索</th>
+                </tr>
+            </thead>
+            <tbody>
+                <template x-for="a in anchors" :key="a.anchor_id">
+                    <tr>
+                        <td class="font-medium" x-text="a.anchor_name"></td>
+                        <td x-text="a.gender || '-'"></td>
+                        <td x-text="a.style || '-'"></td>
+                        <td x-text="a.session_count"></td>
+                        <td class="font-mono" x-text="a.total_hours"></td>
+                        <td class="font-mono" x-text="a.avg_hours_per_session"></td>
+                        <td x-text="a.total_leads"></td>
+                        <td x-text="a.avg_leads"></td>
+                        <td x-text="'¥' + a.total_spend.toFixed(0)"></td>
+                        <td x-text="a.deal_count"></td>
+                        <td x-text="a.deal_rate + '%'"></td>
+                        <td x-show="showEffective" x-text="a.effective_leads ?? '-'"></td>
+                    </tr>
+                </template>
+            </tbody>
+        </table>
+        <div x-show="anchors.length === 0" class="text-center py-8 text-gray-400">暂无数据</div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function anchorStatsApp() {
+    const today = new Date();
+    const y = today.getFullYear(), m = today.getMonth();
+    return {
+        dateFrom: `${y}-${String(m+1).padStart(2,'0')}-01`,
+        dateTo: today.toISOString().slice(0,10),
+        anchors: [],
+        get totalHours() { return this.anchors.reduce((s,a) => s + a.total_hours, 0).toFixed(1); },
+        get totalLeads() { return this.anchors.reduce((s,a) => s + a.total_leads, 0); },
+        get totalEffectiveLeads() { return this.anchors.reduce((s,a) => s + (a.effective_leads || 0), 0); },
+        get effectiveRate() { return this.totalLeads ? ((this.totalEffectiveLeads / this.totalLeads) * 100).toFixed(1) : '0.0'; },
+        _chart: null,
+        showEffective: false,
+
+        setThisMonth() {
+            const d = new Date(); this.dateFrom = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-01`;
+            this.dateTo = d.toISOString().slice(0,10); this.loadData();
+        },
+        setLastMonth() {
+            const d = new Date(); d.setMonth(d.getMonth()-1);
+            this.dateFrom = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-01`;
+            const lastDay = new Date(d.getFullYear(), d.getMonth()+1, 0).getDate();
+            this.dateTo = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${lastDay}`;
+            this.loadData();
+        },
+
+        async loadData() {
+            const params = new URLSearchParams();
+            if (this.dateFrom) params.set('date_from', this.dateFrom);
+            if (this.dateTo) params.set('date_to', this.dateTo);
+            const [statsResp, settingsResp] = await Promise.all([
+                fetch(`/api/anchors/stats?${params}`),
+                fetch('/admin/settings')
+            ]);
+            const json = await statsResp.json();
+            this.anchors = json.data || [];
+            const settings = await settingsResp.json();
+            this.showEffective = settings.anchor_stats_show_effective === 'true';
+            this.renderChart();
+        },
+
+        renderChart() {
+            const el = document.getElementById('hoursChart');
+            if (!el) return;
+            if (this._chart) this._chart.dispose();
+            this._chart = echarts.init(el);
+            const names = this.anchors.map(a => a.anchor_name);
+            const legendData = ['工作时长(h)', '线索数'];
+            const series = [
+                { name: '工作时长(h)', type: 'bar', data: this.anchors.map(a => a.total_hours), itemStyle: {color: '#3b82f6'} },
+                { name: '线索数', type: 'bar', yAxisIndex: 1, data: this.anchors.map(a => a.total_leads), itemStyle: {color: '#10b981'} }
+            ];
+            if (this.showEffective) {
+                legendData.push('有效线索');
+                series.push({ name: '有效线索', type: 'bar', yAxisIndex: 1, data: this.anchors.map(a => a.effective_leads || 0), itemStyle: {color: '#14b8a6'} });
+            }
+            this._chart.setOption({
+                title: { text: '主播工作时长与线索对比', left: 'center' },
+                tooltip: { trigger: 'axis' },
+                legend: { data: legendData, top: 30 },
+                grid: { top: 70, bottom: 30 },
+                xAxis: { type: 'category', data: names },
+                yAxis: [
+                    { type: 'value', name: '时长(h)' },
+                    { type: 'value', name: '线索数' }
+                ],
+                series: series
+            });
+        }
+    };
+}
+</script>
+{% endblock %}
