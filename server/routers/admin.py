@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session as DBSession
 from sqlalchemy import func
 from fastapi.responses import FileResponse, StreamingResponse
 from database import get_db
-from models import Setting, Deal, Lead, Anchor, SessionAnchor, Session, SchedulePlan, ScheduleSlot, ScheduleBinding, AdAccount, RoomAccountBinding, DashboardTab, ClueConfig, TabAnalysis, RecruitTeam, RecruitEmployee, ClueAssignment, ApiClue, AdPlan, AdPlanSpend, Comment, PrivateMessage
+from models import Setting, Deal, Lead, Anchor, SessionAnchor, Session, SchedulePlan, ScheduleSlot, ScheduleBinding, BindingSlot, AdAccount, RoomAccountBinding, DashboardTab, ClueConfig, TabAnalysis, RecruitTeam, RecruitEmployee, ClueAssignment, ApiClue, AdPlan, AdPlanSpend, Comment, PrivateMessage
 from auth import verify_password, create_token, get_current_admin, hash_password
 from pydantic import BaseModel, field_validator
 from typing import Optional
@@ -280,13 +280,13 @@ def anchor_income_stats(date_from: str = None, date_to: str = None, anchor_id: i
             session_period = "未知"
 
         # 按线索时间匹配主播时段：只取在该主播上/下播时段内的线索
-        from utils import time_in_range
+        from utils import time_in_range, extract_hhmm
         all_session_leads = db.query(Lead).filter(Lead.session_id == row.session_id).all()
         total_leads = ad_leads = natural_leads = 0
         if on_time and off_time and all_session_leads:
             for l in all_session_leads:
-                lt = l.lead_time
-                if lt and len(lt) >= 16 and time_in_range(on_time, off_time, lt[11:16]):
+                hhmm = extract_hhmm(l.lead_time)
+                if hhmm and time_in_range(on_time, off_time, hhmm):
                     total_leads += 1
                     if l.ad_account is not None and l.ad_account != '--':
                         ad_leads += 1
@@ -301,15 +301,41 @@ def anchor_income_stats(date_from: str = None, date_to: str = None, anchor_id: i
                 else:
                     natural_leads += 1
 
-        comment_stats = db.query(
-            func.count(Comment.id).label('comment_count'),
-            func.sum(case((Comment.has_lead == True, 1), else_=0)).label('comment_leads')
-        ).filter(Comment.session_id == row.session_id).first()
+        # 评论统计（按主播时段过滤：只取评论时间落在主播时段内的评论）
+        session_comments = db.query(Comment).filter(Comment.session_id == row.session_id).all()
+        comment_count = 0
+        comment_lead_count = 0
+        if on_time and off_time and session_comments:
+            for c in session_comments:
+                ct = c.comment_time
+                ct_hhmm = extract_hhmm(ct)
+                if ct_hhmm and time_in_range(on_time, off_time, ct_hhmm):
+                    comment_count += 1
+                    if c.has_lead:
+                        comment_lead_count += 1
+        else:
+            for c in session_comments:
+                comment_count += 1
+                if c.has_lead:
+                    comment_lead_count += 1
 
-        pm_stats = db.query(
-            func.count(PrivateMessage.id).label('pm_count'),
-            func.sum(case((PrivateMessage.has_lead == True, 1), else_=0)).label('pm_lead_count')
-        ).filter(PrivateMessage.session_id == row.session_id).first()
+        # 私信统计（按主播时段过滤：只取私信时间落在主播时段内的私信）
+        session_pms = db.query(PrivateMessage).filter(PrivateMessage.session_id == row.session_id).all()
+        pm_count = 0
+        pm_lead_count = 0
+        if on_time and off_time and session_pms:
+            for pm in session_pms:
+                pt = pm.last_message_time
+                pt_hhmm = extract_hhmm(pt)
+                if pt_hhmm and time_in_range(on_time, off_time, pt_hhmm):
+                    pm_count += 1
+                    if pm.has_lead:
+                        pm_lead_count += 1
+        else:
+            for pm in session_pms:
+                pm_count += 1
+                if pm.has_lead:
+                    pm_lead_count += 1
 
         result.append({
             "date": date_str,
@@ -325,10 +351,10 @@ def anchor_income_stats(date_from: str = None, date_to: str = None, anchor_id: i
             "ad_lead_count": ad_leads,
             "natural_lead_count": natural_leads,
             "total_lead_count": total_leads,
-            "comment_count": comment_stats.comment_count if comment_stats else 0,
-            "comment_lead_count": int(comment_stats.comment_leads or 0) if comment_stats else 0,
-            "pm_count": pm_stats.pm_count if pm_stats else 0,
-            "pm_lead_count": int(pm_stats.pm_lead_count or 0) if pm_stats else 0,
+            "comment_count": comment_count,
+            "comment_lead_count": comment_lead_count,
+            "pm_count": pm_count,
+            "pm_lead_count": pm_lead_count,
         })
 
     summary = {
@@ -544,23 +570,87 @@ def batch_update_leads(data: LeadBatchUpdate, admin=Depends(get_current_admin), 
 
 @router.get("/leads")
 def list_leads(session_id: int = None, keyword: str = None, city: str = None, is_valid: str = None, source: str = None, page: int = 1, size: int = 20, admin=Depends(get_current_admin), db=Depends(get_db)):
-    query = db.query(Lead).order_by(Lead.created_at.desc())
+    """线索列表：合并油猴线索(leads表) + API线索(api_clues表)"""
+    from models import ApiClue
+    from sqlalchemy import or_
+
+    lead_query = db.query(Lead).order_by(Lead.created_at.desc())
+    api_query = db.query(ApiClue).order_by(ApiClue.created_at.desc())
+
     if session_id:
-        query = query.filter(Lead.session_id == session_id)
+        lead_query = lead_query.filter(Lead.session_id == session_id)
+        # API线索按匹配的session_id过滤
+        api_query = api_query.filter(ApiClue.session_id == session_id)
     if keyword:
-        query = query.filter(Lead.nickname.contains(keyword))
+        lead_query = lead_query.filter(Lead.nickname.contains(keyword))
+        api_query = api_query.filter(or_(ApiClue.name.contains(keyword), ApiClue.author_nickname.contains(keyword)))
     if city:
-        query = query.filter(Lead.city == city)
+        lead_query = lead_query.filter(Lead.city == city)
     if is_valid:
         if is_valid == "true":
-            query = query.filter(Lead.is_valid == True)
+            lead_query = lead_query.filter(Lead.is_valid == True)
         elif is_valid == "false":
-            query = query.filter(Lead.is_valid == False)
+            lead_query = lead_query.filter(Lead.is_valid == False)
+
+    # 来源过滤
+    query_api_only = (source == 'api')
     if source:
-        query = query.filter(Lead.source == source)
-    total = query.count()
-    items = query.offset((page-1)*size).limit(size).all()
-    return {"code": 0, "data": {"items": [{"id": l.id, "session_id": l.session_id, "lead_time": l.lead_time, "nickname": l.nickname, "city": l.city, "path": l.path, "tags": l.tags, "is_valid": l.is_valid, "is_deal": l.is_deal, "source": l.source, "assigned_employee": l.assigned_employee, "ad_account": l.ad_account, "phone_masked": l.phone_masked, "product_name": l.product_name} for l in items], "total": total}}
+        lead_query = lead_query.filter(Lead.source == source)
+
+    # 统计总数
+    total = 0
+    if not query_api_only:
+        total += lead_query.count()
+    if source == 'api' or not source:
+        total += api_query.count()
+
+    # 取数据
+    items = []
+    skip = (page-1)*size
+    take = size
+
+    if not query_api_only:
+        lead_items = lead_query.offset(skip).limit(take).all()
+        for l in lead_items:
+            items.append({
+                "id": f"lead_{l.id}", "origin": "leads",
+                "session_id": l.session_id, "lead_time": l.lead_time,
+                "nickname": l.nickname, "city": l.city, "path": l.path,
+                "tags": l.tags, "is_valid": l.is_valid, "is_deal": l.is_deal,
+                "source": l.source or "tm",
+                "assigned_employee": l.assigned_employee,
+                "ad_account": l.ad_account,
+                "phone_masked": l.phone_masked,
+                "product_name": l.product_name,
+            })
+        taken = len(lead_items)
+        skip = max(0, skip - lead_query.count())
+        take -= taken
+
+    if (source == 'api' or not source) and take > 0:
+        api_items = api_query.offset(skip).limit(take).all()
+        for c in api_items:
+            phone = c.phone_decrypted or c.enc_telephone or ''
+            items.append({
+                "id": f"api_{c.id}", "origin": "api_clues",
+                "session_id": c.session_id,
+                "lead_time": c.create_time_detail or c.modify_time,
+                "nickname": c.name or c.author_nickname or '(匿名)',
+                "city": c.city_name or c.auto_city_name or '',
+                "path": c.flow_entrance or '',
+                "tags": c.clue_type or '',
+                "is_valid": None,
+                "is_deal": False,
+                "source": "api",
+                "assigned_employee": None,
+                "ad_account": c.advertiser_name or c.ad_type or '',
+                "phone_masked": phone[-4:] if phone else '',
+                "product_name": c.product_name or '',
+                "phone": phone,
+                "weixin": c.weixin or '',
+            })
+
+    return {"code": 0, "data": {"items": items, "total": total}}
 
 @router.get("/leads/{lead_id}/assignment")
 def get_lead_assignment(lead_id: int, admin=Depends(get_current_admin), db=Depends(get_db)):
@@ -655,8 +745,16 @@ def save_schedule_slots(plan_id: int, data: dict, admin=Depends(get_current_admi
     if not plan: raise HTTPException(404)
     db.query(ScheduleSlot).filter(ScheduleSlot.plan_id == plan_id).delete()
     for item in data.get("slots", []):
-        slot = ScheduleSlot(plan_id=plan_id, time_slot=item["time_slot"], room_index=item["room_index"],
-            slot_status=item.get("slot_status", "on_air_anchor"), anchor_slot=item.get("anchor_slot"))
+        ts = (item.get("time_slot") or "").strip()
+        if not ts:
+            continue  # 跳过无效时段（time_slot为空的记录）
+        slot = ScheduleSlot(
+            plan_id=plan_id,
+            time_slot=ts,
+            room_index=int(item.get("room_index") or 1),
+            slot_status=item.get("slot_status") or "off_air",
+            anchor_slot=int(item["anchor_slot"]) if item.get("anchor_slot") else None,
+        )
         db.add(slot)
     db.commit()
     return {"code": 0}
@@ -690,11 +788,12 @@ def create_schedule_binding(data: dict, admin=Depends(get_current_admin), db=Dep
             existing.plan_id = plan_id
             existing.anchor_mapping = mapping_json
             results.append({"date": date_str, "action": "updated"})
+            _sync_session_anchors(db, date_str, plan, anchor_mapping, binding_id=existing.id)
         else:
             binding = ScheduleBinding(date=date_str, plan_id=plan_id, anchor_mapping=mapping_json)
             db.add(binding)
             results.append({"date": date_str, "action": "created"})
-        _sync_session_anchors(db, date_str, plan, anchor_mapping)
+            _sync_session_anchors(db, date_str, plan, anchor_mapping)
     db.commit()
     return {"code": 0, "data": results}
 
@@ -707,35 +806,63 @@ def delete_schedule_binding(date: str, admin=Depends(get_current_admin), db=Depe
 
 @router.put("/schedule/bindings/{binding_id}/slots")
 def update_binding_slots(binding_id: int, data: dict, admin=Depends(get_current_admin), db=Depends(get_db)):
-    """更新绑定的排班时段（支持临时加班添加额外时段）"""
+    """更新绑定的临时加班时段（写入BindingSlot，不污染方案模板）
+    前端传入的 slots 中：
+    - 无 isNew 字段 → 来自方案模板，只读，不处理
+    - isNew=true → 临时加班，写入 BindingSlot
+    """
     binding = db.query(ScheduleBinding).filter(ScheduleBinding.id == binding_id).first()
     if not binding: raise HTTPException(404, "排班绑定不存在")
-    plan = db.query(SchedulePlan).get(binding.plan_id)
-    if not plan: raise HTTPException(404, "排班方案不存在")
-    slots_data = data.get("slots", [])
-    # 删除旧slots，写入新slots
-    db.query(ScheduleSlot).filter(ScheduleSlot.plan_id == plan.id).delete()
-    for s in slots_data:
-        slot = ScheduleSlot(
-            plan_id=plan.id,
-            time_slot=s.get("time_slot"),
-            room_index=s.get("room_index", 1),
-            slot_status=s.get("slot_status", "on_air_anchor"),
-            anchor_slot=s.get("anchor_slot")
+
+    # 只处理 isNew=true 的临时加班时段，写入 BindingSlot
+    overtime_data = [s for s in data.get("slots", []) if s.get("isNew")]
+    # 删除旧的加班时段
+    db.query(BindingSlot).filter(BindingSlot.binding_id == binding_id).delete()
+    # 写入新加班时段
+    for s in overtime_data:
+        bs = BindingSlot(
+            binding_id=binding_id,
+            time_slot=s.get("time_slot", "").strip(),
+            room_index=int(s.get("room_index", 1)) if s.get("room_index") else 1,
+            slot_status=s.get("slot_status") or "on_air_anchor",
+            anchor_slot=int(s["anchor_slot"]) if s.get("anchor_slot") else None,
+            notes=s.get("notes") or "临时加班",
         )
-        db.add(slot)
+        db.add(bs)
     db.commit()
-    return {"code": 0, "message": "排班时段已更新"}
+
+    # 同步 SessionAnchor，使临时加班时段计入薪酬统计
+    plan = binding.plan
+    if plan and binding.anchor_mapping and overtime_data:
+        anchor_mapping = json.loads(binding.anchor_mapping)
+        _sync_session_anchors(db, binding.date, plan, anchor_mapping, binding_id=binding.id)
+        db.commit()
+
+    return {"code": 0, "message": f"已保存{len(overtime_data)}条临时加班时段，原方案模板未受影响"}
 
 @router.get("/schedule/log")
 def get_schedule_log(date: str, admin=Depends(get_current_admin), db=Depends(get_db)):
-    """获取某日排班日志：方案详情+时段明细+主播映射"""
+    """获取某日排班日志：方案详情+时段明细+主播映射
+    如果当日未绑定方案，自动查找同一月份最近的绑定（复用anchor_mapping）
+    """
     binding = db.query(ScheduleBinding).filter(ScheduleBinding.date == date).first()
+    is_bound = True
+    bound_date = date
+    # 无绑定时查找同月份最近的绑定，复用其anchor_mapping
     if not binding:
-        return {"code": 0, "data": None}
+        month_prefix = date[:7]
+        fallback_binding = db.query(ScheduleBinding).filter(
+            ScheduleBinding.date.like(f"{month_prefix}%")
+        ).order_by(ScheduleBinding.date).first()
+        if not fallback_binding:
+            return {"code": 0, "data": None, "is_bound": False, "message": "该日及当月均无排班方案"}
+        binding = fallback_binding
+        is_bound = False
+        bound_date = binding.date
+
     plan = db.query(SchedulePlan).get(binding.plan_id)
     if not plan:
-        return {"code": 0, "data": None}
+        return {"code": 0, "data": None, "is_bound": False, "message": "方案不存在"}
     slots = db.query(ScheduleSlot).filter(ScheduleSlot.plan_id == plan.id).order_by(ScheduleSlot.time_slot, ScheduleSlot.room_index).all()
     anchor_mapping = json.loads(binding.anchor_mapping) if binding.anchor_mapping else {}
     anchor_ids = [int(v) for v in anchor_mapping.values() if v]
@@ -746,15 +873,22 @@ def get_schedule_log(date: str, admin=Depends(get_current_admin), db=Depends(get
         if aid and int(aid) in anchor_dict:
             resolved_mapping[slot_key] = anchor_dict[int(aid)]
     sessions = db.query(Session).filter(Session.start_time.like(f"{date}%")).order_by(Session.start_time).all()
+    # 查询临时加班时段（BindingSlot）
+    overtime_slots = db.query(BindingSlot).filter(BindingSlot.binding_id == binding.id).order_by(BindingSlot.time_slot).all() if is_bound else []
     return {"code": 0, "data": {
-        "binding": {"id": binding.id, "date": binding.date, "plan_id": binding.plan_id},
+        "binding": {"id": binding.id, "date": date, "plan_id": binding.plan_id},
         "plan": {"id": plan.id, "name": plan.name, "start_time": plan.start_time, "end_time": plan.end_time,
             "time_granularity": plan.time_granularity, "room_count": plan.room_count, "anchor_count": plan.anchor_count},
         "slots": [{"time_slot": s.time_slot, "room_index": s.room_index,
             "slot_status": s.slot_status, "anchor_slot": s.anchor_slot} for s in slots],
+        "overtime_slots": [{"id": bs.id, "time_slot": bs.time_slot, "room_index": bs.room_index,
+            "slot_status": bs.slot_status, "anchor_slot": bs.anchor_slot, "notes": bs.notes} for bs in overtime_slots],
         "anchor_mapping": resolved_mapping,
         "sessions": [{"id": s.id, "start_time": s.start_time[:16], "end_time": s.end_time[:16] if s.end_time else None,
-            "title": s.title} for s in sessions]}}
+            "room_id": s.room_id, "comment_summary": s.comment_summary} for s in sessions]},
+        "is_bound": is_bound,
+        "bound_date": bound_date,
+        "unbound_tip": "（当日未绑定，使用同月方案，anchor_mapping仅供参考）" if not is_bound else None}
 
 # ===== 直播账户 API =====
 
@@ -872,7 +1006,7 @@ def _generate_slots(db, plan: SchedulePlan):
             db.add(slot)
         current = next_time
 
-def _sync_session_anchors(db, date_str: str, plan: SchedulePlan, anchor_mapping: dict):
+def _sync_session_anchors(db, date_str: str, plan: SchedulePlan, anchor_mapping: dict, binding_id: int = None):
     """根据日期绑定自动同步 SessionAnchor 记录，从排班时段中提取 on_time/off_time/anchor_order"""
     sessions = db.query(Session).filter(Session.start_time.like(f"{date_str}%")).all()
     if not sessions:
@@ -883,6 +1017,16 @@ def _sync_session_anchors(db, date_str: str, plan: SchedulePlan, anchor_mapping:
         ScheduleSlot.plan_id == plan.id,
         ScheduleSlot.slot_status == "on_air_anchor"
     ).all()
+
+    # 如果有 binding_id，也查询临时加班时段（BindingSlot）
+    if binding_id:
+        overtime = db.query(BindingSlot).filter(
+            BindingSlot.binding_id == binding_id,
+            BindingSlot.slot_status == "on_air_anchor"
+        ).all()
+        # 把 BindingSlot 转换为与 ScheduleSlot 相同的处理格式
+        for bs in overtime:
+            slots.append(bs)
 
     # 构建每个锚点的时段列表: [{anchor_id, on_time, off_time, on_minutes, off_minutes}]
     seen = set()
@@ -1218,14 +1362,19 @@ def poll_clues_history(data: dict, admin=Depends(get_current_admin)):
                             cid = clue.get("clue_id")
                             if not cid: continue
                             if db.query(ApiClue).filter(ApiClue.clue_id == cid).first(): continue
-                            aid = match_anchor(clue.get("create_time_detail"), db)
+                            aid_list = match_anchor(clue.get("create_time_detail"), db)
+                            aid = aid_list[0] if aid_list else None
+                            anchor_names_str = None
+                            if aid_list:
+                                anchor_objs = db.query(Anchor).filter(Anchor.id.in_(aid_list)).all()
+                                anchor_names_str = ",".join([a.name for a in anchor_objs])
                             db.add(ApiClue(clue_id=cid, account_id=acct_id,
                                 create_time_detail=clue.get("create_time_detail"),
                                 name=clue.get("name"), author_nickname=clue.get("author_nickname"),
                                 advertiser_name=clue.get("advertiser_name"),
                                 product_name=clue.get("product_name"),
                                 flow_entrance=clue.get("flow_entrance"), flow_type=clue.get("flow_type"),
-                                weixin=clue.get("weixin"), anchor_id=aid))
+                                weixin=clue.get("weixin"), anchor_id=aid, anchor_names=anchor_names_str))
                             total_new += 1
                         db.commit()
                         p = clue_data.get("page", {})
@@ -1248,6 +1397,37 @@ def assign_history_clues(admin=Depends(get_current_admin), db: DBSession = Depen
     from services.assign_service import assign_new_clues
     count = assign_new_clues(db, today_only=False)
     return {"code": 0, "message": f"已分配{count}条历史线索", "count": count}
+
+
+@router.post("/clue-configs/backfill-anchors")
+def backfill_clue_anchors(admin=Depends(get_current_admin), db: DBSession = Depends(get_db)):
+    """回填所有anchor_id为空的ApiClue记录，根据create_time_detail或lead_time重新匹配主播"""
+    from models import ApiClue, Anchor
+    from services.clue_service import match_anchor
+
+    clues = db.query(ApiClue).filter(ApiClue.anchor_id == None).all()
+    updated = 0
+    for clue in clues:
+        time_str = clue.create_time_detail
+        # 油猴脚本来源的线索用lead_time（格式：06-09 23:42）
+        if not time_str and clue.lead_time and clue.clue_source == 'tm':
+            try:
+                # 补全年份，转为 2026-06-09 23:42:00 格式
+                time_str = f"2026-{clue.lead_time}:00"
+                # 同步更新create_time_detail
+                clue.create_time_detail = time_str
+            except Exception:
+                continue
+        if not time_str:
+            continue
+        anchor_ids = match_anchor(time_str, db)
+        if anchor_ids:
+            clue.anchor_id = anchor_ids[0]
+            anchor_objs = db.query(Anchor).filter(Anchor.id.in_(anchor_ids)).all()
+            clue.anchor_names = ",".join([a.name for a in anchor_objs])
+            updated += 1
+    db.commit()
+    return {"code": 0, "message": f"已回填{updated}条线索的主播关联（共{len(clues)}条无关联）", "updated": updated, "total_null": len(clues)}
 
 
 @router.get("/scheduler/status")

@@ -2,18 +2,33 @@
 {% block title %}线索管理{% endblock %}
 {% block admin_content %}
 <div x-data="leadsAdminApp()" x-init="loadLeads()" class="space-y-4">
-    <div class="flex flex-wrap gap-2 items-center bg-white p-4 rounded-lg shadow-sm">
-        <input type="text" x-model="filters.keyword" @input.debounce.500ms="loadLeads()" placeholder="搜索昵称" class="form-input max-w-xs text-sm py-1.5">
-        <select x-model="filters.city" @change="loadLeads()" class="form-input max-w-xs text-sm py-1.5">
+    <div class="flex flex-nowrap gap-1.5 items-center bg-white p-3 rounded-lg shadow-sm overflow-x-auto">
+        <input type="text" x-model="filters.keyword" @input.debounce.500ms="loadLeads()" placeholder="搜索昵称" class="form-input max-w-[130px] text-xs py-1 px-2">
+        <select x-model="filters.city" @change="loadLeads()" class="form-input max-w-[120px] text-xs py-1 px-2">
             <option value="">全部城市</option>
             <template x-for="c in cities"><option :value="c" x-text="c"></option></template>
         </select>
-        <select x-model="filters.is_valid" @change="loadLeads()" class="form-input max-w-xs text-sm py-1.5">
+        <select x-model="filters.is_valid" @change="loadLeads()" class="form-input max-w-[110px] text-xs py-1 px-2">
             <option value="">全部有效性</option>
             <option value="true">有效</option>
             <option value="false">无效</option>
             <option value="null">未验证</option>
         </select>
+        <select x-model="filters.source" @change="loadLeads()" class="form-input max-w-[120px] text-xs py-1 px-2">
+            <option value="">全部来源</option>
+            <option value="marketing">营销流</option>
+            <option value="natural">自然流</option>
+            <option value="api">API同步</option>
+            <option value="tm">油猴采集</option>
+            <option value="manual">手动添加</option>
+            <option value="excel">Excel导入</option>
+        </select>
+        <button @click="showManualClueModal()" class="btn-primary text-sm py-1.5 px-3">+ 添加私信线索</button>
+        <label class="btn-success text-sm py-1.5 px-3 cursor-pointer">
+            📊 Excel导入
+            <input type="file" accept=".xlsx,.xls" @change="handleExcelUpload($event)" class="hidden">
+        </label>
+        <a href="/admin/poll-logs" class="btn-primary text-sm py-1.5 px-3 no-underline">📋 采集日志</a>
         <div class="ml-auto text-sm text-gray-500">共 <span x-text="total"></span> 条</div>
     </div>
     <div x-show="selectedIds.length>0" class="bg-blue-50 p-3 rounded flex gap-2">
@@ -26,7 +41,7 @@
             <thead><tr>
                 <th><input type="checkbox" @change="toggleAll($event.target.checked)"></th>
                 <th>昵称</th><th>城市</th><th>留资时间</th>
-                <th>路径</th><th>标签</th><th>有效性</th><th>分配员工</th><th>成单</th>
+                <th>来源</th><th>联系方式</th><th>微信</th><th>路径</th><th>标签</th><th>有效性</th><th>分配员工</th><th>成单</th>
             </tr></thead>
             <tbody>
                 <template x-for="l in leads" :key="l.id">
@@ -35,6 +50,16 @@
                         <td x-text="l.nickname"></td>
                         <td x-text="l.city||'-'"></td>
                         <td x-text="l.lead_time"></td>
+                        <td>
+                            <span x-show="l.source==='marketing'" class="bg-pink-100 text-pink-800 px-2 py-1 rounded text-xs">营销流</span>
+                            <span x-show="l.source==='api'" class="bg-blue-100 text-blue-800 px-2 py-1 rounded text-xs">API</span>
+                            <span x-show="l.source==='tm'" class="bg-green-100 text-green-800 px-2 py-1 rounded text-xs">油猴</span>
+                            <span x-show="l.source==='manual'" class="bg-purple-100 text-purple-800 px-2 py-1 rounded text-xs">手动</span>
+                            <span x-show="l.source==='natural'" class="bg-teal-100 text-teal-800 px-2 py-1 rounded text-xs">自然流</span>
+                            <span x-show="l.source==='excel'" class="bg-orange-100 text-orange-800 px-2 py-1 rounded text-xs">Excel</span>
+                        </td>
+                        <td class="text-xs font-mono" x-text="l.phone || l.phone_masked || '-'"></td>
+                        <td class="text-xs" x-text="l.weixin || '-'"></td>
                         <td x-text="l.path||'-'"></td>
                         <td x-text="l.tags||'-'"></td>
                         <td>
@@ -43,10 +68,12 @@
                             </select>
                         </td>
                         <td>
-                            <input type="text" x-model="l.assigned_employee" @blur="assignEmployee(l.id, l.assigned_employee)" placeholder="-" class="form-input text-xs py-1 w-20" :value="l.assigned_employee||''">
+                            <span x-show="l.assigned_employee" x-text="l.assigned_employee" class="text-xs text-gray-700 mr-1"></span>
+                            <button @click="showAssignModal(l)" class="btn-primary text-xs py-0.5 px-2">分配</button>
                         </td>
                         <td>
                             <span x-show="l.is_deal" class="bg-green-100 text-green-800 px-2 py-1 rounded text-xs">已成单 ✓</span>
+                            <button x-show="l.is_deal" @click="cancelDeal(l.id)" class="text-xs text-red-600 hover:text-red-800 underline">取消成单</button>
                             <button x-show="!l.is_deal" @click="showDealModal(l)" class="btn-success text-xs py-1 px-2">标记成单 💰</button>
                         </td>
                     </tr>
@@ -59,31 +86,187 @@
         <span class="text-sm">第 <span x-text="page"></span> 页</span>
         <button @click="page++;loadLeads()" :disabled="page*pageSize>=total" class="px-3 py-1 border rounded disabled:opacity-50">下一页</button>
     </div>
-</div>
-<div x-show="dealModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center" style="display:none" x-cloak>
-    <div class="bg-white p-6 rounded-lg shadow-xl w-[400px] space-y-3">
+
+    <!-- 模态框必须放在 x-data 作用域内 -->
+    <div x-show="dealModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center" x-cloak @click.self="dealModal=false">
+    <div class="bg-white p-6 rounded-lg shadow-xl w-[480px] space-y-3">
         <h3 class="font-bold">标记成单</h3>
         <input x-model="dealForm.customer_name" placeholder="客户姓名" class="form-input">
         <input x-model="dealForm.amount" type="number" placeholder="成交金额" class="form-input">
         <input x-model="dealForm.deal_time" type="date" class="form-input">
-        <input x-model="dealForm.employee" placeholder="负责员工" class="form-input">
+        <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">成单团队</label>
+            <select x-model="dealForm.team_id" @change="onDealTeamChange()" class="form-input">
+                <option value="">选择团队</option>
+                <template x-for="t in dealTeams" :key="t.id"><option :value="t.id" x-text="t.name"></option></template>
+            </select>
+        </div>
+        <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">成单员工</label>
+            <select x-model="dealForm.employee_id" class="form-input">
+                <option value="">选择员工</option>
+                <template x-for="emp in dealTeamEmployees" :key="emp.id"><option :value="emp.id" x-text="emp.name"></option></template>
+            </select>
+        </div>
         <div class="flex space-x-2">
             <button @click="saveDeal()" class="btn-primary">保存</button>
             <button @click="dealModal=false" class="bg-gray-200 px-4 py-2 rounded hover:bg-gray-300">取消</button>
         </div>
     </div>
 </div>
-{% endblock %}
-{% block scripts %}
+
+    <!-- 分配线索弹窗 -->
+    <div x-show="assignModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center" x-cloak @click.self="assignModal=false">
+        <div class="bg-white p-6 rounded-lg shadow-xl w-[400px] space-y-4">
+            <h3 class="font-bold text-lg">分配线索</h3>
+            <div class="text-sm text-gray-600 mb-2" x-text="assignForm.clue_info"></div>
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">选择团队</label>
+                <select x-model="assignForm.team_id" class="form-input">
+                    <option value="">请选择团队</option>
+                    <template x-for="t in assignTeams">
+                        <option :value="t.id" x-text="t.name"></option>
+                    </template>
+                </select>
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">选择员工</label>
+                <select x-model="assignForm.employee_id" class="form-input">
+                    <option value="">请选择员工</option>
+                    <template x-for="emp in currentTeamEmployees">
+                        <option :value="emp.id" x-text="emp.name + ' (' + emp.phone + ')'"></option>
+                    </template>
+                </select>
+            </div>
+            <div class="flex space-x-2">
+                <button @click="saveAssignment()" class="btn-primary">确认分配</button>
+                <button @click="assignModal=false" class="bg-gray-200 px-4 py-2 rounded hover:bg-gray-300">取消</button>
+            </div>
+        </div>
+    </div>
+
+    <div x-show="manualClueModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center" x-cloak @click.self="manualClueModal=false">
+    <div class="bg-white p-6 rounded-lg shadow-xl w-[500px] space-y-4">
+        <h3 class="font-bold text-lg">添加私信线索</h3>
+        <div class="grid grid-cols-2 gap-4">
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">客户姓名</label>
+                <input x-model="manualClueForm.name" placeholder="姓名" class="form-input">
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">手机号</label>
+                <input x-model="manualClueForm.phone" placeholder="手机号" class="form-input">
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">微信号</label>
+                <input x-model="manualClueForm.weixin" placeholder="微信号" class="form-input">
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">来源</label>
+                <select x-model="manualClueForm.source" class="form-input">
+                    <option value="marketing">营销流</option>
+                    <option value="natural">自然流</option>
+                    <option value="manual">手动添加</option>
+                </select>
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">私信时间</label>
+                <input x-model="manualClueForm.message_time" type="datetime-local" class="form-input" @change="autoMatchSession()">
+            </div>
+            <div class="col-span-2">
+                <label class="block text-sm font-medium text-gray-700 mb-1">关联场次</label>
+                <div class="flex gap-2">
+                    <select x-model="manualClueForm.session_id" class="form-input flex-1">
+                        <option value="">自动匹配</option>
+                        <template x-for="s in matchedSessions" :key="s.id">
+                            <option :value="s.id" x-text="s.title + ' (' + s.start_time + '~' + s.end_time + ')'"></option>
+                        </template>
+                    </select>
+                    <button type="button" @click="manualClueForm.session_id='';matchedSessions=[]" class="text-sm text-gray-500 hover:text-gray-700">清除</button>
+                </div>
+            </div>
+            <div class="col-span-2">
+                <label class="block text-sm font-medium text-gray-700 mb-1">备注</label>
+                <textarea x-model="manualClueForm.notes" rows="2" class="form-input" placeholder="可选备注信息"></textarea>
+            </div>
+        </div>
+        <div class="flex space-x-2 pt-2">
+            <button @click="saveManualClue()" class="btn-primary">保存</button>
+            <button @click="manualClueModal=false" class="bg-gray-200 px-4 py-2 rounded hover:bg-gray-300">取消</button>
+        </div>
+    </div>
+</div>
+
+    <div x-show="excelImportModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center" x-cloak @click.self="excelImportModal=false">
+    <div class="bg-white p-6 rounded-lg shadow-xl w-[600px] space-y-4">
+        <h3 class="font-bold text-lg">Excel批量导入线索</h3>
+        <div class="bg-gray-50 p-4 rounded text-sm">
+            <p class="font-medium mb-2">支持的列名：</p>
+            <ul class="list-disc list-inside text-gray-600 space-y-1">
+                <li>必需：手机号 或 姓名（至少填一项）</li>
+                <li>可选：微信号、私信时间、备注</li>
+            </ul>
+        </div>
+        <div x-show="!excelPreviewData">
+            <label class="block text-sm font-medium text-gray-700 mb-1">选择Excel文件</label>
+            <input type="file" accept=".xlsx,.xls" @change="previewExcel($event)" class="form-input">
+        </div>
+        <div x-show="excelPreviewData" class="space-y-2">
+            <div class="flex justify-between items-center">
+                <span class="text-sm font-medium">预览 (共 <span x-text="excelPreviewData?.length"></span> 条)</span>
+                <button @click="excelPreviewData=null" class="text-sm text-blue-500 hover:text-blue-700">重新选择</button>
+            </div>
+            <div class="max-h-60 overflow-y-auto border rounded">
+                <table class="min-w-full text-xs">
+                    <thead><tr class="bg-gray-100">
+                        <th class="px-2 py-1">姓名</th><th>手机号</th><th>微信号</th><th>私信时间</th>
+                    </tr></thead>
+                    <tbody>
+                        <template x-for="(item, idx) in (excelPreviewData||[]).slice(0, 10)" :key="idx">
+                            <tr class="border-t">
+                                <td class="px-2 py-1" x-text="item.name||'-'"></td>
+                                <td x-text="item.phone||'-'"></td>
+                                <td x-text="item.weixin||'-'"></td>
+                                <td x-text="item.message_time||'-'"></td>
+                            </tr>
+                        </template>
+                    </tbody>
+                </table>
+            </div>
+            <p x-show="(excelPreviewData||[]).length > 10" class="text-xs text-gray-500">仅显示前10条，共<span x-text="excelPreviewData?.length"></span>条</p>
+        </div>
+        <div x-show="excelErrors.length > 0" class="bg-red-50 p-3 rounded text-sm">
+            <p class="font-medium text-red-700 mb-1">错误信息：</p>
+            <ul class="list-disc list-inside text-red-600">
+                <template x-for="err in excelErrors" :key="err"><li x-text="err"></li></template>
+            </ul>
+        </div>
+        <div class="flex space-x-2 pt-2">
+            <button @click="confirmExcelImport()" :disabled="!excelPreviewData" class="btn-primary disabled:opacity-50">确认导入</button>
+            <button @click="excelImportModal=false;excelPreviewData=null;excelErrors=[]" class="bg-gray-200 px-4 py-2 rounded hover:bg-gray-300">取消</button>
+        </div>
+    </div>
+</div>
+</div>
 <script>
 function leadsAdminApp() {
     return {
         leads:[], total:0, page:1, pageSize:20, selectedIds:[],
-        filters:{keyword:'',city:'',is_valid:''}, cities:[],
-        dealModal:false, dealForm:{customer_name:'',amount:'',deal_time:'',employee:'',lead_id:null,session_id:null},
+        filters:{keyword:'',city:'',is_valid:'',source:''}, cities:[],
+        dealModal:false, dealForm:{customer_name:'',amount:'',deal_time:'',employee:'',lead_id:null,session_id:null,team_id:'',employee_id:''},
+        dealTeams:[], dealTeamEmployees:[],
+        manualClueModal:false, manualClueForm:{name:'',phone:'',weixin:'',message_time:'',session_id:'',notes:'',source:'manual'},
+        matchedSessions:[],
+        excelImportModal:false, excelPreviewData:null, excelErrors:[],
+        assignModal:false, assignForm:{clue_id:null, team_id:'', employee_id:'', clue_info:''}, assignTeams:[],
+        get currentTeamEmployees() {
+            if (!this.assignForm.team_id) return [];
+            const team = this.assignTeams.find(t => t.id == this.assignForm.team_id);
+            return team ? team.employees : [];
+        },
         async loadLeads() {
             const params = new URLSearchParams({page:this.page,size:this.pageSize,...this.filters});
-            const resp = await fetch(`/admin/api/leads?${params}`,{headers:{'Authorization':'Bearer '+localStorage.getItem('token')}});
+            const resp = await fetch(`/admin/api/leads?${params}`,{headers:{'Authorization':'Bearer '+localStorage.getItem('admin_token')}});
             const json = await resp.json();
             this.leads = json.data?.items||[]; this.total = json.data?.total||0;
             const uniqueCities = [...new Set(this.leads.map(l=>l.city).filter(Boolean))];
@@ -91,27 +274,159 @@ function leadsAdminApp() {
         },
         async markValid(id,val) {
             const v = val==='null'?null:(val==='true');
-            await fetch(`/admin/api/leads/${id}`,{method:'PUT',headers:{'Authorization':'Bearer '+localStorage.getItem('token'),'Content-Type':'application/json'},body:JSON.stringify({is_valid:v})});
+            await fetch(`/admin/api/leads/${id}`,{method:'PUT',headers:{'Authorization':'Bearer '+localStorage.getItem('admin_token'),'Content-Type':'application/json'},body:JSON.stringify({is_valid:v})});
             this.loadLeads();
         },
         async batchMark(valid) {
-            await fetch('/admin/api/leads/batch',{method:'POST',headers:{'Authorization':'Bearer '+localStorage.getItem('token'),'Content-Type':'application/json'},body:JSON.stringify({lead_ids:this.selectedIds,is_valid:valid})});
+            await fetch('/admin/api/leads/batch',{method:'POST',headers:{'Authorization':'Bearer '+localStorage.getItem('admin_token'),'Content-Type':'application/json'},body:JSON.stringify({lead_ids:this.selectedIds,is_valid:valid})});
             this.selectedIds=[]; this.loadLeads();
         },
-        async assignEmployee(id, employee) {
-            await fetch(`/admin/api/leads/${id}`,{method:'PUT',headers:{'Authorization':'Bearer '+localStorage.getItem('token'),'Content-Type':'application/json'},body:JSON.stringify({assigned_employee:employee||null})});
-        },
         toggleAll(checked) { this.selectedIds = checked ? this.leads.map(l=>l.id) : []; },
-        showDealModal(lead) {
-            this.dealForm = {customer_name:lead.nickname, amount:'', deal_time:new Date().toISOString().slice(0,10), employee:'', lead_id:lead.id, session_id:lead.session_id};
+        async showDealModal(lead) {
+            this.dealForm = {customer_name:lead.nickname, amount:'', deal_time:new Date().toISOString().slice(0,10), employee:'', lead_id:lead.id, session_id:lead.session_id, team_id:'', employee_id:''};
+            this.dealTeamEmployees = [];
+            // 加载团队列表
+            const teamResp = await fetch('/admin/api/recruit-teams', {headers:{'Authorization':'Bearer '+localStorage.getItem('admin_token')}});
+            const teamJson = await teamResp.json();
+            this.dealTeams = teamJson.data || [];
+            // 自动继承线索分配的团队/员工
+            const assignResp = await fetch(`/admin/api/leads/${lead.id}/assignment`, {headers:{'Authorization':'Bearer '+localStorage.getItem('admin_token')}});
+            const assignJson = await assignResp.json();
+            if (assignJson.code === 0 && assignJson.data) {
+                if (assignJson.data.team_id) this.dealForm.team_id = String(assignJson.data.team_id);
+                if (assignJson.data.employee_id) this.dealForm.employee_id = String(assignJson.data.employee_id);
+                if (assignJson.data.team_id) this.onDealTeamChange();
+            }
             this.dealModal = true;
+        },
+        onDealTeamChange() {
+            const team = this.dealTeams.find(t => t.id == this.dealForm.team_id);
+            this.dealTeamEmployees = team ? (team.employees || []) : [];
+            // 如果当前选中的员工不在新团队的员工列表中，清空选择
+            if (this.dealForm.employee_id && !this.dealTeamEmployees.find(e => e.id == this.dealForm.employee_id)) {
+                this.dealForm.employee_id = '';
+            }
         },
         async saveDeal() {
             const body = JSON.stringify(this.dealForm);
-            const resp = await fetch('/admin/api/deals', {method:'POST', headers:{'Authorization':'Bearer '+localStorage.getItem('token'), 'Content-Type':'application/json'}, body});
+            const resp = await fetch('/admin/api/deals', {method:'POST', headers:{'Authorization':'Bearer '+localStorage.getItem('admin_token'), 'Content-Type':'application/json'}, body});
             const json = await resp.json();
             if (json.code !== 0) { alert(json.message || '操作失败'); return; }
             this.dealModal = false; this.loadLeads();
+        },
+        async cancelDeal(leadId) {
+            if (!confirm('确定取消成单？')) return;
+            const resp = await fetch(`/admin/api/deals/by-lead/${leadId}`, {method:'DELETE', headers:{'Authorization':'Bearer '+localStorage.getItem('admin_token')}});
+            const json = await resp.json();
+            if (json.code !== 0) { alert(json.message || '操作失败'); return; }
+            this.loadLeads();
+        },
+        showManualClueModal() {
+            this.manualClueForm = {name:'',phone:'',weixin:'',message_time:'',session_id:'',notes:'',source:'marketing'};
+            this.matchedSessions = [];
+            this.manualClueModal = true;
+        },
+        async autoMatchSession() {
+            if (!this.manualClueForm.message_time) { this.matchedSessions = []; return; }
+            const resp = await fetch(`/admin/api/sessions/match?message_time=${encodeURIComponent(this.manualClueForm.message_time)}`, {headers:{'Authorization':'Bearer '+localStorage.getItem('admin_token')}});
+            const json = await resp.json();
+            this.matchedSessions = json.data || [];
+            if (this.matchedSessions.length === 1) {
+                this.manualClueForm.session_id = this.matchedSessions[0].id;
+            }
+        },
+        async saveManualClue() {
+            if (!this.manualClueForm.phone && !this.manualClueForm.name) {
+                alert('请至少填写姓名或手机号');
+                return;
+            }
+            const payload = {...this.manualClueForm};
+            if (payload.session_id === '') payload.session_id = null;
+            if (payload.message_time === '') payload.message_time = null;
+            const body = JSON.stringify(payload);
+            const resp = await fetch('/admin/api/manual-clue', {method:'POST', headers:{'Authorization':'Bearer '+localStorage.getItem('admin_token'), 'Content-Type':'application/json'}, body});
+            const json = await resp.json();
+            if (json.code !== 0) { alert(json.message || '操作失败'); return; }
+            this.manualClueModal = false;
+            alert('线索添加成功');
+            this.loadLeads();
+        },
+        handleExcelUpload(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            this.excelPreviewData = null;
+            this.excelErrors = [];
+            this.excelImportModal = true;
+            // 自动触发预览
+            this.previewExcel({target: {files: [file]}});
+        },
+        async previewExcel(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            const formData = new FormData();
+            formData.append('file', file);
+            const resp = await fetch('/admin/api/clues/excel-upload', {
+                method: 'POST',
+                headers: {'Authorization': 'Bearer ' + localStorage.getItem('admin_token')},
+                body: formData
+            });
+            const json = await resp.json();
+            if (json.code !== 0) {
+                this.excelErrors = json.errors || [json.message];
+                this.excelPreviewData = null;
+            } else {
+                this.excelPreviewData = json.data;
+                this.excelErrors = [];
+            }
+        },
+        async confirmExcelImport() {
+            if (!this.excelPreviewData || this.excelPreviewData.length === 0) {
+                alert('没有可导入的数据');
+                return;
+            }
+            const resp = await fetch('/admin/api/clues/excel-confirm', {
+                method: 'POST',
+                headers: {'Authorization': 'Bearer ' + localStorage.getItem('admin_token'), 'Content-Type': 'application/json'},
+                body: JSON.stringify({items: this.excelPreviewData})
+            });
+            const json = await resp.json();
+            if (json.code !== 0) {
+                alert(json.message || '导入失败');
+                return;
+            }
+            this.excelImportModal = false;
+            this.excelPreviewData = null;
+            alert('导入成功');
+            this.loadLeads();
+        },
+        async showAssignModal(lead) {
+            this.assignForm.clue_id = lead.id;
+            this.assignForm.clue_info = lead.nickname + ' - ' + (lead.phone_masked || lead.phone_decrypted || '');
+            this.assignForm.team_id = '';
+            this.assignForm.employee_id = '';
+            this.assignModal = true;
+            const resp = await fetch('/admin/api/recruit-teams', {headers:{'Authorization':'Bearer '+localStorage.getItem('admin_token')}});
+            const json = await resp.json();
+            this.assignTeams = json.data || [];
+        },
+        saveAssignment() {
+            if (!this.assignForm.clue_id || !this.assignForm.team_id || !this.assignForm.employee_id) {
+                alert('请选择团队和员工');
+                return;
+            }
+            fetch('/admin/api/clue-assignments', {
+                method: 'POST',
+                headers: {'Authorization':'Bearer '+localStorage.getItem('admin_token'), 'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    clue_id: this.assignForm.clue_id,
+                    team_id: parseInt(this.assignForm.team_id),
+                    employee_id: parseInt(this.assignForm.employee_id)
+                })
+            }).then(resp => resp.json()).then(json => {
+                if (json.code !== 0) { alert(json.message || '分配失败'); return; }
+                this.assignModal = false;
+                this.loadLeads();
+            });
         }
     };
 }
