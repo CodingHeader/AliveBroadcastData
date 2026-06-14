@@ -62,13 +62,21 @@ function sidebarApp() {
             this.loadContent(url);
         },
         async loadContent(url, isPopState = false) {
+            if (this._loading) return;
+            this._loading = true;
             try {
+                const adminMain = document.querySelector('main.flex-1') || document.querySelectorAll('main')[1];
+                if (adminMain) {
+                    if (typeof Alpine !== 'undefined') {
+                        Alpine.stopObservingMutations();
+                        Alpine.destroyTree(adminMain);
+                    }
+                    adminMain.innerHTML = '<div class="flex items-center justify-center h-64"><div class="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div><span class="ml-3 text-gray-500">加载中...</span></div>';
+                }
                 const resp = await adminFetch(url);
                 const html = await resp.text();
-                // 匹配admin内容区的main标签（class含flex-1和bg-gray-50）
                 const mainMatch = html.match(/<main[^>]*class="[^"]*flex-1[^"]*bg-gray-50[^"]*"[^>]*>([\s\S]*)<\/main>\s*<\/div>/i);
                 if (mainMatch) {
-                    const adminMain = document.querySelector('main.flex-1') || document.querySelectorAll('main')[1];
                     if (adminMain) {
                         adminMain.innerHTML = mainMatch[1];
                         Array.from(adminMain.querySelectorAll('script')).forEach(oldScript => {
@@ -78,22 +86,20 @@ function sidebarApp() {
                             oldScript.replaceWith(newScript);
                         });
                         if (typeof Alpine !== 'undefined') {
-                            // 让 Alpine MutationObserver 先完成旧组件清理，避免 initTree 跳过新组件
-                            await new Promise(resolve => setTimeout(resolve, 0));
                             Alpine.initTree(adminMain);
+                            Alpine.startObservingMutations();
                         }
                     }
                 } else {
-                    // fallback: 整页刷新
                     location.href = url;
                     return;
                 }
-                if (!isPopState) {
-                    history.pushState({}, '', url);
-                }
+                if (!isPopState) history.pushState({}, '', url);
             } catch(e) {
                 console.error('导航失败:', e);
                 location.href = url;
+            } finally {
+                this._loading = false;
             }
         }
     };

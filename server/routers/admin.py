@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy.orm import Session as DBSession
 from sqlalchemy import func
 from fastapi.responses import FileResponse, StreamingResponse
@@ -8,8 +8,9 @@ from auth import verify_password, create_token, get_current_admin, hash_password
 from pydantic import BaseModel, field_validator
 from typing import Optional
 from datetime import datetime
+import shutil
 from pathlib import Path
-import json, os, shutil, io, time
+import json, os, io, time
 
 router = APIRouter()
 
@@ -719,9 +720,11 @@ def update_schedule_plan(plan_id: int, data: dict, admin=Depends(get_current_adm
 
 @router.delete("/schedule/plans/{plan_id}")
 def delete_schedule_plan(plan_id: int, admin=Depends(get_current_admin), db=Depends(get_db)):
-    binding_count = db.query(ScheduleBinding).filter(ScheduleBinding.plan_id == plan_id).count()
-    if binding_count > 0:
-        return {"code": 400, "message": f"该方案已被 {binding_count} 天绑定，请先解除绑定"}
+    # 先删除该方案的绑定记录（含临时加班slot），再删除方案
+    bindings = db.query(ScheduleBinding).filter(ScheduleBinding.plan_id == plan_id).all()
+    for b in bindings:
+        db.query(BindingSlot).filter(BindingSlot.binding_id == b.id).delete()
+    db.query(ScheduleBinding).filter(ScheduleBinding.plan_id == plan_id).delete()
     db.query(ScheduleSlot).filter(ScheduleSlot.plan_id == plan_id).delete()
     db.query(SchedulePlan).filter(SchedulePlan.id == plan_id).delete()
     db.commit()
@@ -1110,8 +1113,8 @@ def _sync_session_anchors(db, date_str: str, plan: SchedulePlan, anchor_mapping:
 
 # ===== 数据库备份/导入导出 API =====
 
-DB_PATH = Path(__file__).parent / "data.db"
-BACKUP_DIR = Path(__file__).parent / "backups"
+DB_PATH = Path(__file__).parent.parent / "data.db"
+BACKUP_DIR = Path(__file__).parent.parent / "backups"
 
 @router.get("/db/backup")
 def backup_database(admin=Depends(get_current_admin)):
@@ -1139,21 +1142,20 @@ def download_backup(filename: str, admin=Depends(get_current_admin)):
     return FileResponse(str(filepath), media_type="application/octet-stream", filename=filename)
 
 @router.post("/db/upload-restore")
-async def upload_restore_database(admin=Depends(get_current_admin), file: bytes = None):
+async def upload_restore_database(admin=Depends(get_current_admin), file: UploadFile = File(...)):
     """上传数据库文件并恢复"""
-    if not file:
-        raise HTTPException(400, "未上传文件")
     # 先备份当前数据库
     BACKUP_DIR.mkdir(exist_ok=True)
     pre_restore_name = f"data_pre_restore_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
     if DB_PATH.exists():
         shutil.copy2(DB_PATH, BACKUP_DIR / pre_restore_name)
     # 写入新数据库
+    content = await file.read()
     with open(DB_PATH, 'wb') as f:
-        f.write(file)
+        f.write(content)
     return {"code": 0, "message": "数据库已恢复，请重启服务生效", "pre_restore_backup": pre_restore_name}
 
-@router.post("/db/export-json")
+@router.get("/db/export-json")
 def export_database_json(admin=Depends(get_current_admin), db: DBSession = Depends(get_db)):
     """导出全部数据为JSON格式"""
     from models import SessionMetric, Comment, HighIntentUser, PrivateMessage, Report

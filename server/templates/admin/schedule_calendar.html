@@ -141,14 +141,18 @@ function calendarApp() {
         },
 
         async loadData() {
-            const [pRes, aRes, bRes, accRes] = await Promise.all([
+            if (this._dataLoading) return;
+            this._dataLoading = true;
+            try {
+                const [pRes, aRes, bRes, accRes] = await Promise.all([
                 adminFetch('/admin/api/schedule/plans'), adminFetch('/admin/api/anchors'),
                 adminFetch(`/admin/api/schedule/bindings?year=${this.currentYear}&month=${this.currentMonth}`),
                 adminFetch('/admin/api/ad-accounts')
             ]);
             const [pJ, aJ, bJ, accJ] = await Promise.all([pRes.json(), aRes.json(), bRes.json(), accRes.json()]);
             this.plans = pJ.data || []; this.activePlans = this.plans.filter(p => p.is_active);
-            this.anchors = aJ.data || []; this.bindings = bJ.data || []; this.adAccounts = accJ.data || [];
+                this.anchors = aJ.data || []; this.bindings = bJ.data || []; this.adAccounts = accJ.data || [];
+            } finally { this._dataLoading = false; }
         },
 
         async selectDate(cell) {
@@ -157,11 +161,17 @@ function calendarApp() {
             if(idx >= 0) { this.selectedDates.splice(idx, 1); }
             else { this.selectedDates.push(cell.dateStr); }
             if(this.selectedDates.length > 0) {
-                this.bindForm = { plan_id: '', anchor_mapping: {}, room_accounts: {} };
+                // 确保数据已加载（防御 bindings 异步竞态）
+                if (this.bindings.length === 0) await this.loadData();
+                // 逐属性重置 bindForm，保持 Alpine Proxy 代理
+                this.bindForm.plan_id = '';
+                for (const key in this.bindForm.anchor_mapping) delete this.bindForm.anchor_mapping[key];
+                for (const key in this.bindForm.room_accounts) delete this.bindForm.room_accounts[key];
                 const existing = this.bindings.find(b => b.date === cell.dateStr);
                 if(existing) {
                     this.bindForm.plan_id = existing.plan_id;
-                    this.bindForm.anchor_mapping = existing.anchor_mapping || {};
+                    const srcMap = existing.anchor_mapping || {};
+                    for (const [k, v] of Object.entries(srcMap)) this.bindForm.anchor_mapping[k] = v;
                 }
                 // 加载已有直播间账户绑定
                 try {
@@ -173,7 +183,10 @@ function calendarApp() {
             }
         },
 
-        onPlanChange() { this.bindForm.anchor_mapping = {}; this.bindForm.room_accounts = {}; },
+        onPlanChange() {
+            for (const key in this.bindForm.anchor_mapping) delete this.bindForm.anchor_mapping[key];
+            for (const key in this.bindForm.room_accounts) delete this.bindForm.room_accounts[key];
+        },
 
         autoFillAnchors() {
             // 一键排班：按全职主播轮序自动填充
@@ -215,8 +228,8 @@ function calendarApp() {
                 await adminFetch('/admin/api/room-bindings/swap', {method:'POST',headers:{'Content-Type':'application/json'},
                     body:JSON.stringify({date, room_a: roomA, room_b: roomB})});
             }
-            // 刷新绑定数据
-            this.bindForm.room_accounts = {};
+            // 刷新绑定数据（逐属性清理，保持 Proxy）
+            for (const key in this.bindForm.room_accounts) delete this.bindForm.room_accounts[key];
             try {
                 const date = this.selectedDates[0];
                 const r = await adminFetch(`/admin/api/room-bindings?date=${date}`);

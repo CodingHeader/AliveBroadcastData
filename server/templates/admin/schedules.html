@@ -75,7 +75,7 @@
             <!-- 占位符说明 -->
             <div class="bg-blue-50 p-3 rounded text-sm">
                 <span class="font-medium">占位符：</span>
-                <template x-for="i in detailPlan?.anchor_count || 0" :key="i">
+                <template x-for="i in detailAnchors" :key="i">
                     <span class="inline-block bg-blue-100 text-blue-700 px-2 py-0.5 rounded mr-1" x-text="'主播'+i"></span>
                 </template>
                 <span class="text-gray-500 ml-2">在日历绑定时关联真实主播</span>
@@ -86,7 +86,7 @@
                     <thead>
                         <tr>
                             <th>时段</th>
-                            <template x-for="r in detailPlan?.room_count || 2" :key="r">
+                            <template x-for="r in detailRooms" :key="r">
                                 <th x-text="'直播间'+r"></th>
                             </template>
                         </tr>
@@ -95,7 +95,7 @@
                         <template x-for="slot in detailTimeSlots" :key="slot">
                             <tr>
                                 <td class="font-mono text-sm whitespace-nowrap" x-text="slot"></td>
-                                <template x-for="r in detailPlan?.room_count || 2" :key="r">
+                                <template x-for="r in detailRooms" :key="r">
                                     <td>
                                         <div class="flex space-x-1">
                                             <select class="form-input py-0.5 text-xs w-28"
@@ -107,10 +107,11 @@
                                             </select>
                                             <select class="form-input py-0.5 text-xs w-20"
                                                 x-show="getSlotData(slot, r).slot_status === 'on_air_anchor'"
-                                                x-model="getSlotData(slot, r).anchor_slot">
-                                                <option value="">-</option>
-                                                <template x-for="i in detailPlan?.anchor_count || 0" :key="i">
-                                                    <option :value="i" x-text="'主播'+i"></option>
+                                                :value="getSlotData(slot, r).anchor_slot"
+                                                @change="getSlotData(slot, r).anchor_slot = $event.target.value">
+                                                <option value="" :selected="getSlotData(slot, r).anchor_slot === '' || !getSlotData(slot, r).anchor_slot">-</option>
+                                                <template x-for="i in detailAnchors" :key="i">
+                                                    <option :value="i" :selected="String(getSlotData(slot, r).anchor_slot) === String(i)" x-text="'主播'+i"></option>
                                                 </template>
                                             </select>
                                         </div>
@@ -132,7 +133,9 @@
 function scheduleApp() {
     return {
         plans: [], showCreateModal: false, showDetailModal: false,
-        editingPlan: null, detailPlan: null, detailSlots: [],
+        editingPlan: null,
+        detailPlan: { id: 0, name: '', start_time: '08:00', end_time: '23:00', time_granularity: 60, room_count: 2, anchor_count: 5, is_active: true, notes: '' },
+        detailSlots: [], detailAnchors: [], detailRooms: [],
         anchorParttime: {},
         form: { name:'', start_time:'08:00', end_time:'23:00', time_granularity:'60', room_count:'2', anchor_count:'5', is_active:'true', notes:'' },
 
@@ -142,9 +145,15 @@ function scheduleApp() {
         },
         editPlan(p) {
             this.editingPlan = p;
-            this.form = { name:p.name, start_time:p.start_time, end_time:p.end_time,
-                time_granularity:String(p.time_granularity), room_count:String(p.room_count),
-                anchor_count:String(p.anchor_count), is_active:String(p.is_active), notes:p.notes||'' };
+            // 逐属性赋值，保持 Alpine Proxy
+            this.form.name = p.name;
+            this.form.start_time = p.start_time;
+            this.form.end_time = p.end_time;
+            this.form.time_granularity = String(p.time_granularity);
+            this.form.room_count = String(p.room_count);
+            this.form.anchor_count = String(p.anchor_count);
+            this.form.is_active = String(p.is_active);
+            this.form.notes = p.notes || '';
             this.showCreateModal = true;
         },
         async savePlan() {
@@ -167,8 +176,53 @@ function scheduleApp() {
         async openDetail(planId) {
             const r = await adminFetch(`/admin/api/schedule/plans/${planId}/slots`); const j = await r.json();
             if(j.code !== 0) return;
-            this.detailPlan = j.data.plan;
-            this.detailSlots = j.data.slots || [];
+            const plan = j.data.plan;
+            // 逐属性赋值 detailPlan，保持 Alpine Proxy 追踪
+            this.detailPlan.id = plan.id;
+            this.detailPlan.name = plan.name;
+            this.detailPlan.start_time = plan.start_time;
+            this.detailPlan.end_time = plan.end_time;
+            this.detailPlan.time_granularity = plan.time_granularity;
+            this.detailPlan.room_count = plan.room_count;
+            this.detailPlan.anchor_count = plan.anchor_count;
+            this.detailPlan.is_active = plan.is_active;
+            this.detailPlan.notes = plan.notes;
+            // 显式计算主播/直播间数组，确保首次渲染即有值（用字符串匹配 select option value 类型）
+            this.detailAnchors = Array.from({length: plan.anchor_count || 0}, (_, i) => String(i + 1));
+            this.detailRooms = Array.from({length: plan.room_count || 2}, (_, i) => i + 1);
+            // 将 API 返回的 anchor_slot 统一转为字符串，与 <option :value> 类型一致
+            // 对 on_air_anchor 但 anchor_slot 为空的 slot，自动填充默认值 '1'
+            this.detailSlots = (j.data.slots || []).map(s => ({
+                ...s,
+                anchor_slot: s.anchor_slot != null ? String(s.anchor_slot) : (s.slot_status === 'on_air_anchor' ? '1' : '')
+            }));
+            // 预计算补全：为每个 timeSlot × roomIndex 组合确保有 slot 对象
+            const roomCount = this.detailPlan.room_count || 2;
+            const timeSlots = [...new Set(this.detailSlots.map(s => s.time_slot))];
+            // 如果后端没返回任何 slot，根据 time_granularity 生成时段列表
+            if (timeSlots.length === 0) {
+                const gran = this.detailPlan.time_granularity || 60;
+                const [sh, sm] = (this.detailPlan.start_time || '08:00').split(':').map(Number);
+                const [eh, em] = (this.detailPlan.end_time || '23:00').split(':').map(Number);
+                let startMin = sh * 60 + sm, endMin = eh * 60 + em;
+                if (endMin <= startMin) endMin += 24 * 60; // 跨天
+                for (let m = startMin; m < endMin; m += gran) {
+                    const h1 = Math.floor(m / 60) % 24, m1 = m % 60;
+                    const m2 = m + gran, h2 = Math.floor(m2 / 60) % 24, mm2 = m2 % 60;
+                    timeSlots.push(`${String(h1).padStart(2,'0')}:${String(m1).padStart(2,'0')}-${String(h2).padStart(2,'0')}:${String(mm2).padStart(2,'0')}`);
+                }
+            }
+            for (const slot of timeSlots) {
+                for (let ri = 1; ri <= roomCount; ri++) {
+                    if (!this.detailSlots.find(s => s.time_slot === slot && s.room_index === ri)) {
+                        this.detailSlots.push({
+                            time_slot: slot, room_index: ri,
+                            slot_status: 'on_air_anchor',
+                            anchor_slot: this.detailPlan.anchor_count > 0 ? '1' : ''
+                        });
+                    }
+                }
+            }
             this.showDetailModal = true;
         },
         get detailTimeSlots() {
@@ -177,13 +231,9 @@ function scheduleApp() {
             return result;
         },
         getSlotData(timeSlot, roomIndex) {
-            let found = this.detailSlots.find(s => s.time_slot === timeSlot && s.room_index === roomIndex);
-            if(!found) {
-                const defaultAnchor = this.detailPlan?.anchor_count > 0 ? 1 : '';
-                found = { time_slot: timeSlot, room_index: roomIndex, slot_status: 'on_air_anchor', anchor_slot: defaultAnchor };
-                this.detailSlots.push(found);
-            }
-            return found;
+            // 纯读取，不修改 detailSlots（避免渲染期副作用触发重渲染循环）
+            return this.detailSlots.find(s => s.time_slot === timeSlot && s.room_index === roomIndex)
+                || { slot_status: 'on_air_anchor', anchor_slot: '' };
         },
         onSlotStatusChange(timeSlot, roomIndex) {
             const s = this.getSlotData(timeSlot, roomIndex);
