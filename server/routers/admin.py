@@ -1074,35 +1074,51 @@ def _sync_session_anchors(db, date_str: str, plan: SchedulePlan, anchor_mapping:
         else:
             merged.append(dict(block))
 
-    # 同步到各场次：根据场次时间范围匹配对应的anchor_blocks
+    # 同步到各场次：每个anchor_block只分配给重叠时长最大的那个场次，避免跨场次重复计算
+    # 先删除所有场次的旧SessionAnchor
     for s in sessions:
         db.query(SessionAnchor).filter(SessionAnchor.session_id == s.id).delete()
 
-        # 解析场次的时间范围
+    # 解析所有场次的时间范围
+    session_ranges = []
+    for s in sessions:
         session_start_time = s.start_time[11:16] if s.start_time and len(s.start_time) >= 16 else None
         session_end_time = s.end_time[11:16] if s.end_time and len(s.end_time) >= 16 else None
         if not session_start_time:
             continue
+        start_min = _parse_time_minutes(session_start_time)
+        end_min = _parse_time_minutes(session_end_time) if session_end_time else start_min + 360
+        if end_min < start_min:
+            end_min += 24 * 60
+        session_ranges.append((s, start_min, end_min))
 
-        session_start_min = _parse_time_minutes(session_start_time)
-        session_end_min = _parse_time_minutes(session_end_time) if session_end_time else session_start_min + 360
+    # 每个block只分配给重叠分钟数最大的场次
+    block_to_session = {}  # block_index -> session
+    for bi, block in enumerate(merged):
+        block_start = block["on_minutes"]
+        block_end = block["off_minutes"]
+        if block_end < block_start:
+            block_end += 24 * 60
 
-        # 筛选与该场次时间重叠的anchor_blocks
-        matched_blocks = []
-        for block in merged:
-            # 判断block与session是否有时间重叠
-            block_start = block["on_minutes"]
-            block_end = block["off_minutes"]
-            # 跨天处理：如果off < on，说明跨天
-            if block_end < block_start:
-                block_end += 24 * 60
-            if session_end_min < session_start_min:
-                session_end_min += 24 * 60
-            # 重叠条件：block_start < session_end && block_end > session_start
-            if block_start < session_end_min and block_end > session_start_min:
-                matched_blocks.append(block)
+        best_s = None
+        best_overlap = 0
+        for s, s_start, s_end in session_ranges:
+            overlap_start = max(block_start, s_start)
+            overlap_end = min(block_end, s_end)
+            overlap = max(0, overlap_end - overlap_start)
+            if overlap > best_overlap:
+                best_overlap = overlap
+                best_s = s
 
-        for order, block in enumerate(matched_blocks, 1):
+        if best_s:
+            block_to_session.setdefault(best_s.id, []).append(bi)
+
+    # 按场次写入SessionAnchor，每个场次内按上播时间排序
+    for s in sessions:
+        block_indices = block_to_session.get(s.id, [])
+        assigned_blocks = [merged[bi] for bi in block_indices]
+        assigned_blocks.sort(key=lambda b: b["on_minutes"])
+        for order, block in enumerate(assigned_blocks, 1):
             db.add(SessionAnchor(
                 session_id=s.id,
                 anchor_id=block["anchor_id"],
