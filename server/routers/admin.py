@@ -981,10 +981,7 @@ def swap_room_accounts(data: dict, admin=Depends(get_current_admin), db: DBSessi
 
 # ===== 排班辅助函数 =====
 
-def _parse_time_minutes(t: str) -> int:
-    """将时间字符串转为分钟数，支持跨天（如 25:00 = 次日01:00）"""
-    parts = t.replace("：", ":").split(":")
-    return int(parts[0]) * 60 + int(parts[1])
+from services.anchor_stats_service import _parse_time_minutes
 
 def _generate_slots(db, plan: SchedulePlan):
     """根据方案大纲自动生成时段行，默认开播有主播并自动分配主播编号"""
@@ -1009,123 +1006,7 @@ def _generate_slots(db, plan: SchedulePlan):
             db.add(slot)
         current = next_time
 
-def _sync_session_anchors(db, date_str: str, plan: SchedulePlan, anchor_mapping: dict, binding_id: int = None):
-    """根据日期绑定自动同步 SessionAnchor 记录，从排班时段中提取 on_time/off_time/anchor_order"""
-    sessions = db.query(Session).filter(Session.start_time.like(f"{date_str}%")).all()
-    if not sessions:
-        return
-
-    # 获取该方案的所有时段，仅处理"开播有主播"的时段
-    slots = db.query(ScheduleSlot).filter(
-        ScheduleSlot.plan_id == plan.id,
-        ScheduleSlot.slot_status == "on_air_anchor"
-    ).all()
-
-    # 如果有 binding_id，也查询临时加班时段（BindingSlot）
-    if binding_id:
-        overtime = db.query(BindingSlot).filter(
-            BindingSlot.binding_id == binding_id,
-            BindingSlot.slot_status == "on_air_anchor"
-        ).all()
-        # 把 BindingSlot 转换为与 ScheduleSlot 相同的处理格式
-        for bs in overtime:
-            slots.append(bs)
-
-    # 构建每个锚点的时段列表: [{anchor_id, on_time, off_time, on_minutes, off_minutes}]
-    seen = set()
-    anchor_blocks = []
-    for slot in slots:
-        anchor_slot = slot.anchor_slot
-        if anchor_slot is None:
-            continue
-        anchor_id = anchor_mapping.get(str(anchor_slot))
-        if not anchor_id:
-            continue
-        anchor_id = int(anchor_id)
-        parts = slot.time_slot.split("-")
-        on_time = parts[0]
-        off_time = parts[1]
-        on_min = _parse_time_minutes(on_time)
-        off_min = _parse_time_minutes(off_time)
-        key = (anchor_id, on_min, off_min)
-        if key in seen:
-            continue
-        seen.add(key)
-        anchor_blocks.append({
-            "anchor_id": anchor_id,
-            "on_time": on_time,
-            "off_time": off_time,
-            "on_minutes": on_min,
-            "off_minutes": off_min,
-        })
-
-    if not anchor_blocks:
-        return
-
-    # 按上播时间排序
-    anchor_blocks.sort(key=lambda x: (x["on_minutes"], x["anchor_id"]))
-
-    # 合并同一锚点的连续时段
-    merged = []
-    for block in anchor_blocks:
-        if merged and merged[-1]["anchor_id"] == block["anchor_id"] and merged[-1]["off_time"] == block["on_time"]:
-            merged[-1]["off_time"] = block["off_time"]
-            merged[-1]["off_minutes"] = block["off_minutes"]
-        else:
-            merged.append(dict(block))
-
-    # 同步到各场次：每个anchor_block只分配给重叠时长最大的那个场次，避免跨场次重复计算
-    # 先删除所有场次的旧SessionAnchor
-    for s in sessions:
-        db.query(SessionAnchor).filter(SessionAnchor.session_id == s.id).delete()
-
-    # 解析所有场次的时间范围
-    session_ranges = []
-    for s in sessions:
-        session_start_time = s.start_time[11:16] if s.start_time and len(s.start_time) >= 16 else None
-        session_end_time = s.end_time[11:16] if s.end_time and len(s.end_time) >= 16 else None
-        if not session_start_time:
-            continue
-        start_min = _parse_time_minutes(session_start_time)
-        end_min = _parse_time_minutes(session_end_time) if session_end_time else start_min + 360
-        if end_min < start_min:
-            end_min += 24 * 60
-        session_ranges.append((s, start_min, end_min))
-
-    # 每个block只分配给重叠分钟数最大的场次
-    block_to_session = {}  # block_index -> session
-    for bi, block in enumerate(merged):
-        block_start = block["on_minutes"]
-        block_end = block["off_minutes"]
-        if block_end < block_start:
-            block_end += 24 * 60
-
-        best_s = None
-        best_overlap = 0
-        for s, s_start, s_end in session_ranges:
-            overlap_start = max(block_start, s_start)
-            overlap_end = min(block_end, s_end)
-            overlap = max(0, overlap_end - overlap_start)
-            if overlap > best_overlap:
-                best_overlap = overlap
-                best_s = s
-
-        if best_s:
-            block_to_session.setdefault(best_s.id, []).append(bi)
-
-    # 按场次写入SessionAnchor，每个场次内按上播时间排序
-    for s in sessions:
-        block_indices = block_to_session.get(s.id, [])
-        assigned_blocks = [merged[bi] for bi in block_indices]
-        assigned_blocks.sort(key=lambda b: b["on_minutes"])
-        for order, block in enumerate(assigned_blocks, 1):
-            db.add(SessionAnchor(
-                session_id=s.id,
-                anchor_id=block["anchor_id"],
-                on_time=block["on_time"],
-                off_time=block["off_time"],
-                anchor_order=order
-            ))
+from services.anchor_stats_service import sync_session_anchors as _sync_session_anchors
 
 # ===== 数据库备份/导入导出 API =====
 

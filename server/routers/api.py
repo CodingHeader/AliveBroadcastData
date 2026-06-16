@@ -264,6 +264,18 @@ def receive_session(data: SessionData, db: DBSession = Depends(get_db)):
             for pm in data.private_messages:
                 db.add(PrivateMessage(session_id=session.id, nickname=pm.get('nickname',''), douyin_id=pm.get('douyin_id',''), has_lead=pm.get('has_lead',False), last_message_time=pm.get('last_message_time',''), last_reply_time=pm.get('last_reply_time',''), pending_reply=pm.get('pending_reply',''), message_count=pm.get('message_count',0), ai_reply_count=pm.get('ai_reply_count',0)))
         db.commit()
+        # 同步SessionAnchor：新Session入库后自动触发对应日期的排班主播同步
+        try:
+            date_str = start[:10]
+            binding = db.query(ScheduleBinding).filter(ScheduleBinding.date == date_str).first()
+            if binding and binding.plan_id:
+                plan = db.query(SchedulePlan).filter(SchedulePlan.id == binding.plan_id).first()
+                if plan:
+                    from services.anchor_stats_service import sync_session_anchors
+                    sync_session_anchors(db, date_str, plan, binding.anchor_mapping, binding_id=binding.id)
+                    db.commit()
+        except Exception as e:
+            logger.warning(f"SessionAnchor自动同步失败(date={date_str}): {e}")
         # 数据入库后立即自动AI分析（异步，不阻塞返回）
         try:
             from services.ai_service import analyze_session

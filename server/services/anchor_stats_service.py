@@ -5,7 +5,8 @@
 from typing import Optional, List, Dict, Any
 from sqlalchemy import func, case
 from collections import defaultdict
-from models import Session, Anchor, SessionAnchor, Lead, Comment, SessionMetric, PrivateMessage
+from models import Session, Anchor, SessionAnchor, Lead, Comment, SessionMetric, PrivateMessage, ScheduleSlot, BindingSlot, SchedulePlan, ScheduleBinding
+import json
 
 
 def _calc_session_period(on_time: str) -> str:
@@ -24,6 +25,114 @@ def _calc_session_period(on_time: str) -> str:
             return "晚间场"
     except Exception:
         return "未知"
+
+
+def _parse_time_minutes(t: str) -> int:
+    """将时间字符串转为分钟数，支持跨天（如 25:00 = 次日01:00）"""
+    parts = t.replace("：", ":").split(":")
+    return int(parts[0]) * 60 + int(parts[1])
+
+
+def sync_session_anchors(db, date_str: str, plan: SchedulePlan, anchor_mapping, binding_id: int = None):
+    """根据日期绑定自动同步 SessionAnchor 记录。可在 admin.py 和 api.py 中复用。"""
+    if isinstance(anchor_mapping, str):
+        anchor_mapping = json.loads(anchor_mapping)
+
+    sessions = db.query(Session).filter(Session.start_time.like(f"{date_str}%")).all()
+    if not sessions:
+        return
+
+    slots = db.query(ScheduleSlot).filter(
+        ScheduleSlot.plan_id == plan.id,
+        ScheduleSlot.slot_status == "on_air_anchor"
+    ).all()
+
+    if binding_id:
+        overtime = db.query(BindingSlot).filter(
+            BindingSlot.binding_id == binding_id,
+            BindingSlot.slot_status == "on_air_anchor"
+        ).all()
+        for bs in overtime:
+            slots.append(bs)
+
+    seen = set()
+    anchor_blocks = []
+    for slot in slots:
+        anchor_slot = slot.anchor_slot
+        if anchor_slot is None:
+            continue
+        anchor_id = anchor_mapping.get(str(anchor_slot))
+        if not anchor_id:
+            continue
+        anchor_id = int(anchor_id)
+        parts = slot.time_slot.split("-")
+        on_time = parts[0]
+        off_time = parts[1]
+        on_min = _parse_time_minutes(on_time)
+        off_min = _parse_time_minutes(off_time)
+        key = (anchor_id, on_min, off_min)
+        if key in seen:
+            continue
+        seen.add(key)
+        anchor_blocks.append({
+            "anchor_id": anchor_id, "on_time": on_time, "off_time": off_time,
+            "on_minutes": on_min, "off_minutes": off_min,
+        })
+
+    if not anchor_blocks:
+        return
+
+    anchor_blocks.sort(key=lambda x: (x["on_minutes"], x["anchor_id"]))
+    merged = []
+    for block in anchor_blocks:
+        if merged and merged[-1]["anchor_id"] == block["anchor_id"] and merged[-1]["off_time"] == block["on_time"]:
+            merged[-1]["off_time"] = block["off_time"]
+            merged[-1]["off_minutes"] = block["off_minutes"]
+        else:
+            merged.append(dict(block))
+
+    for s in sessions:
+        db.query(SessionAnchor).filter(SessionAnchor.session_id == s.id).delete()
+
+    session_ranges = []
+    for s in sessions:
+        session_start_time = s.start_time[11:16] if s.start_time and len(s.start_time) >= 16 else None
+        session_end_time = s.end_time[11:16] if s.end_time and len(s.end_time) >= 16 else None
+        if not session_start_time:
+            continue
+        start_min = _parse_time_minutes(session_start_time)
+        end_min = _parse_time_minutes(session_end_time) if session_end_time else start_min + 360
+        if end_min < start_min:
+            end_min += 24 * 60
+        session_ranges.append((s, start_min, end_min))
+
+    block_to_session = {}
+    for bi, block in enumerate(merged):
+        block_start = block["on_minutes"]
+        block_end = block["off_minutes"]
+        if block_end < block_start:
+            block_end += 24 * 60
+        best_s = None
+        best_overlap = 0
+        for s, s_start, s_end in session_ranges:
+            overlap_start = max(block_start, s_start)
+            overlap_end = min(block_end, s_end)
+            overlap = max(0, overlap_end - overlap_start)
+            if overlap > best_overlap:
+                best_overlap = overlap
+                best_s = s
+        if best_s:
+            block_to_session.setdefault(best_s.id, []).append(bi)
+
+    for s in sessions:
+        block_indices = block_to_session.get(s.id, [])
+        assigned_blocks = [merged[bi] for bi in block_indices]
+        assigned_blocks.sort(key=lambda b: b["on_minutes"])
+        for order, block in enumerate(assigned_blocks, 1):
+            db.add(SessionAnchor(
+                session_id=s.id, anchor_id=block["anchor_id"],
+                on_time=block["on_time"], off_time=block["off_time"], anchor_order=order
+            ))
 
 
 def _calc_duration_minutes(on_time: str, off_time: str, fallback_minutes: int = 0) -> int:
