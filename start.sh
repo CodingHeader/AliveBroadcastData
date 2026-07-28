@@ -1,5 +1,28 @@
 #!/bin/bash
 echo "=== AliveBroadcastData 启动 ==="
+
+# Load .env if present
+if [ -f ".env" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in
+            ''|\#*) continue ;;
+        esac
+        if [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
+            key="${BASH_REMATCH[1]}"
+            value="${BASH_REMATCH[2]}"
+            if [[ "$value" =~ ^"(.*)"$ ]]; then
+                value="${BASH_REMATCH[1]}"
+            elif [[ "$value" =~ ^'\''(.*)'\''$ ]]; then
+                value="${BASH_REMATCH[1]}"
+            fi
+            export "$key=$value"
+        fi
+    done < ".env"
+else
+    echo "[ERROR] 未找到 .env，请先在项目根目录创建 .env"
+    exit 1
+fi
+
 cd "$(dirname "$0")/server" || exit 1
 
 # 从 config.py 读取实际端口（默认12306）

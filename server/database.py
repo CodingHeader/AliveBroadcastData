@@ -17,7 +17,7 @@ class Base(DeclarativeBase):
 
 def init_db():
     """创建所有表 + 初始化默认配置"""
-    from models import Session, SessionMetric, Lead, Comment, HighIntentUser, Report, Anchor, SessionAnchor, Deal, Setting, SchedulePlan, ScheduleSlot, ScheduleBinding, AdAccount, RoomAccountBinding, ApiClue, ClueConfig, DashboardTab, TabAnalysis, RecruitTeam, RecruitEmployee, ClueAssignment, AdPlan, AdPlanSpend
+    from models import Session, SessionMetric, Lead, Comment, HighIntentUser, Report, Anchor, SessionAnchor, Deal, Setting, SchedulePlan, ScheduleSlot, ScheduleBinding, AdAccount, RoomAccountBinding, ApiClue, ClueConfig, DashboardTab, TabAnalysis, RecruitTeam, RecruitEmployee, ClueAssignment, AdPlan, AdPlanSpend, MultiDimRecord, MultiDimImportBatch, MultiDimImportSkip, ScheduleDay, ScheduleDayAnchor, WeekdayDefault, ScheduleDayOperator, Operator, CollectionLog
     from auth import hash_password
     from config import DEFAULT_ADMIN_USERNAME, DEFAULT_ADMIN_PASSWORD
     from datetime import datetime
@@ -143,6 +143,15 @@ def init_db():
             from sqlalchemy import text
             conn = engine.connect()
             conn.execute(text("ALTER TABLE leads ADD COLUMN assigned_employee TEXT"))
+            conn.commit()
+            conn.close()
+        except Exception:
+            pass  # 列已存在或其他错误，忽略
+
+        try:
+            from sqlalchemy import text
+            conn = engine.connect()
+            conn.execute(text("ALTER TABLE leads ADD COLUMN weixin TEXT"))
             conn.commit()
             conn.close()
         except Exception:
@@ -349,6 +358,159 @@ def init_db():
         except Exception:
             pass
 
+        # 迁移：schedule_bindings 表添加 recruit_team_id 列
+        try:
+            with engine.connect() as conn:
+                result = conn.execute(text("PRAGMA table_info(schedule_bindings)"))
+                columns = [row[1] for row in result]
+                if 'recruit_team_id' not in columns:
+                    conn.execute(text("ALTER TABLE schedule_bindings ADD COLUMN recruit_team_id INTEGER REFERENCES recruit_teams(id)"))
+                    conn.commit()
+        except Exception:
+            pass
+
+        # 迁移：创建多维数据导入相关表
+        try:
+            from models import MultiDimRecord, MultiDimImportBatch, MultiDimImportSkip
+            # SQLAlchemy create_all 会自动创建不存在的表
+            Base.metadata.create_all(bind=engine)
+            # 创建缺失的列（ALTER TABLE 安全迁移）
+            for table_name, col_name, col_type in [
+                ("multidim_records", "dedup_key", "TEXT"),
+                ("multidim_records", "contact_norm", "TEXT"),
+                ("multidim_records", "wechat", "TEXT"),
+                ("multidim_records", "synced_to_lead", "INTEGER DEFAULT 0"),
+            ]:
+                try:
+                    with engine.connect() as conn:
+                        result = conn.execute(text(f"PRAGMA table_info({table_name})"))
+                        columns = [row[1] for row in result]
+                        if col_name not in columns:
+                            conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {col_name} {col_type}"))
+                            conn.commit()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # 迁移：排班方案增加运营人数
+        try:
+            with engine.connect() as conn:
+                result = conn.execute(text("PRAGMA table_info(schedule_plans)"))
+                columns = [row[1] for row in result]
+                if "operator_count" not in columns:
+                    conn.execute(text("ALTER TABLE schedule_plans ADD COLUMN operator_count INTEGER DEFAULT 1"))
+                    conn.commit()
+        except Exception:
+            pass
+
+        # 迁移：排班绑定增加运营人员映射
+        try:
+            with engine.connect() as conn:
+                result = conn.execute(text("PRAGMA table_info(schedule_bindings)"))
+                columns = [row[1] for row in result]
+                if "staff_mapping" not in columns:
+                    conn.execute(text("ALTER TABLE schedule_bindings ADD COLUMN staff_mapping TEXT DEFAULT '{}'"))
+                    conn.commit()
+        except Exception:
+            pass
+
+        # 迁移：schedule_days 增加直播计划字段
+        for col_name, col_type in [
+            ("plan_id", "INTEGER"),
+            ("status", "TEXT DEFAULT 'draft'"),
+            ("source", "TEXT DEFAULT 'manual'"),
+            ("updated_at", "TEXT"),
+            ("updated_by", "TEXT"),
+        ]:
+            try:
+                with engine.connect() as conn:
+                    result = conn.execute(text("PRAGMA table_info(schedule_days)"))
+                    columns = [row[1] for row in result]
+                    if col_name not in columns:
+                        conn.execute(text(f"ALTER TABLE schedule_days ADD COLUMN {col_name} {col_type}"))
+                        conn.commit()
+            except Exception:
+                pass
+
+        # 迁移：sessions 表增加新字段（第二直播间支持）
+        for col_name, col_type in [
+            ("ad_account_id", "INTEGER"),
+            ("room_index", "INTEGER"),
+            ("external_session_id", "TEXT"),
+            ("schedule_day_id", "INTEGER"),
+            ("ingest_updated_at", "TEXT"),
+        ]:
+            try:
+                with engine.connect() as conn:
+                    result = conn.execute(text("PRAGMA table_info(sessions)"))
+                    columns = [row[1] for row in result]
+                    if col_name not in columns:
+                        conn.execute(text(f"ALTER TABLE sessions ADD COLUMN {col_name} {col_type}"))
+                        conn.commit()
+            except Exception:
+                pass
+
+        # 迁移：schedule_days 增加 recruit_team_id
+        try:
+            with engine.connect() as conn:
+                result = conn.execute(text("PRAGMA table_info(schedule_days)"))
+                columns = [row[1] for row in result]
+                if "recruit_team_id" not in columns:
+                    conn.execute(text("ALTER TABLE schedule_days ADD COLUMN recruit_team_id INTEGER"))
+                    conn.commit()
+        except Exception:
+            pass
+
+        # 迁移：删除 sessions 旧 start_time 唯一约束，增加 (ad_account_id, start_time) 复合索引
+        try:
+            with engine.connect() as conn:
+                # 检查是否仍有旧的 start_time 唯一索引
+                result = conn.execute(text("PRAGMA index_list(sessions)"))
+                has_old_unique = any(row[2] == 1 for row in result)  # unique=1
+                if has_old_unique:
+                    # SQLite 不能直接删除约束，需要重建表
+                    conn.execute(text("""
+                        CREATE TABLE sessions_new (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            start_time TEXT NOT NULL,
+                            end_time TEXT NOT NULL,
+                            duration_minutes INTEGER NOT NULL,
+                            analyzed BOOLEAN,
+                            analyzed_at TEXT,
+                            room_id TEXT,
+                            ad_account_id INTEGER,
+                            room_index INTEGER,
+                            external_session_id TEXT,
+                            schedule_day_id INTEGER,
+                            ingest_updated_at TEXT,
+                            comment_summary TEXT,
+                            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                        )
+                    """))
+                    conn.execute(text("""
+                        INSERT INTO sessions_new (id, start_time, end_time, duration_minutes, analyzed, analyzed_at, room_id, ad_account_id, room_index, external_session_id, schedule_day_id, ingest_updated_at, comment_summary, created_at)
+                        SELECT id, start_time, end_time, duration_minutes, analyzed, analyzed_at, room_id, ad_account_id, room_index, external_session_id, schedule_day_id, ingest_updated_at, comment_summary, created_at FROM sessions
+                    """))
+                    conn.execute(text("DROP TABLE sessions"))
+                    conn.execute(text("ALTER TABLE sessions_new RENAME TO sessions"))
+                    conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_account_time ON sessions(ad_account_id, start_time)"))
+                    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_sessions_external_id ON sessions(external_session_id)"))
+                    conn.commit()
+        except Exception:
+            pass
+
+        # 迁移：schedule_slots 增加 operator_slot 字段
+        try:
+            with engine.connect() as conn:
+                result = conn.execute(text("PRAGMA table_info(schedule_slots)"))
+                columns = [row[1] for row in result]
+                if "operator_slot" not in columns:
+                    conn.execute(text("ALTER TABLE schedule_slots ADD COLUMN operator_slot INTEGER"))
+                    conn.commit()
+        except Exception:
+            pass
+
         db.commit()
     finally:
         db.close()
@@ -360,3 +522,65 @@ def get_db():
         yield db
     finally:
         db.close()
+
+
+def db_health_check():
+    """数据库结构自检，启动时调用"""
+    import logging
+    logger = logging.getLogger(__name__)
+    checks = []
+    try:
+        with engine.connect() as conn:
+            # 检查 sessions 表字段
+            result = conn.execute(text("PRAGMA table_info(sessions)"))
+            session_cols = {row[1] for row in result}
+            required_session_cols = ['ad_account_id', 'room_index', 'external_session_id', 'schedule_day_id', 'ingest_updated_at']
+            for col in required_session_cols:
+                checks.append(('sessions.' + col, col in session_cols))
+
+            # 检查索引
+            result = conn.execute(text("PRAGMA index_list(sessions)"))
+            session_idx = {row[1] for row in result}
+            checks.append(('idx_sessions_account_time', 'idx_sessions_account_time' in session_idx))
+            checks.append(('idx_sessions_external_id', 'idx_sessions_external_id' in session_idx))
+
+            # 检查 schedule_days 字段
+            result = conn.execute(text("PRAGMA table_info(schedule_days)"))
+            sd_cols = {row[1] for row in result}
+            required_sd_cols = ['plan_id', 'recruit_team_id', 'status', 'source', 'updated_at']
+            for col in required_sd_cols:
+                checks.append(('schedule_days.' + col, col in sd_cols))
+
+            # 检查 schedule_plans 字段
+            result = conn.execute(text("PRAGMA table_info(schedule_plans)"))
+            sp_cols = {row[1] for row in result}
+            checks.append(('schedule_plans.operator_count', 'operator_count' in sp_cols))
+
+            # 检查 schedule_bindings 字段
+            result = conn.execute(text("PRAGMA table_info(schedule_bindings)"))
+            sb_cols = {row[1] for row in result}
+            checks.append(('schedule_bindings.staff_mapping', 'staff_mapping' in sb_cols))
+
+            # 检查 collection_logs 字段
+            result = conn.execute(text("PRAGMA table_info(collection_logs)"))
+            cl_cols = {row[1] for row in result}
+            checks.append(('collection_logs.request_id', 'request_id' in cl_cols))
+
+    except Exception as e:
+        logger.error(f"数据库自检失败: {e}")
+        return
+
+    # 输出结果
+    all_ok = True
+    for name, ok in checks:
+        status = "OK" if ok else "MISSING"
+        if not ok:
+            all_ok = False
+            logger.warning(f"   [{status}] {name}")
+        else:
+            logger.info(f"   [{status}] {name}")
+
+    if all_ok:
+        logger.info("数据库结构自检全部通过")
+    else:
+        logger.warning("数据库结构自检存在缺失项，请检查迁移是否完整")

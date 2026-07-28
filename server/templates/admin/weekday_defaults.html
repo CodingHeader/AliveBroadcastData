@@ -1,0 +1,108 @@
+{% extends "admin/base.html" %}
+{% block title %}周默认排班方案{% endblock %}
+{% block admin_content %}
+<div x-data="weekdayDefaultsApp()" x-init="loadDefaults()" class="space-y-4">
+    <div class="flex items-center justify-between bg-white p-4 rounded-lg shadow-sm">
+        <h3 class="font-bold text-lg">📅 周默认排班方案</h3>
+        <div class="text-sm text-gray-500">配置周一至周日的默认方案，可在直播日历中一键应用到整月</div>
+    </div>
+
+    <div class="bg-white rounded-lg shadow-sm overflow-hidden">
+        <table class="data-table w-full">
+            <thead><tr>
+                <th>星期</th>
+                <th>排班方案</th>
+                <th>主播映射</th>
+                <th>招生团队</th>
+                <th>操作</th>
+            </tr></thead>
+            <tbody>
+                <template x-for="(d, idx) in defaults" :key="d.weekday">
+                    <tr>
+                        <td class="font-medium" x-text="d.weekday_name || `周${['一','二','三','四','五','六','日'][d.weekday]}`"></td>
+                        <td>
+                            <select x-model="d.plan_id" class="form-input text-sm py-1 px-2 min-w-[150px]">
+                                <option value="">选择方案</option>
+                                <template x-for="p in plans" :key="p.id">
+                                    <option :value="p.id" x-text="p.name"></option>
+                                </template>
+                            </select>
+                        </td>
+                        <td>
+                            <div class="flex flex-wrap gap-1">
+                                <template x-for="slot in (d.anchor_mapping ? Object.keys(d.anchor_mapping) : [])" :key="slot">
+                                    <div class="flex items-center gap-1">
+                                        <span class="text-xs text-gray-500" x-text="`主播${slot}:`"></span>
+                                        <select x-model="d.anchor_mapping[slot]" class="form-input text-xs py-0.5 px-1 max-w-[100px]">
+                                            <option value="">未指定</option>
+                                            <template x-for="a in anchors" :key="a.id">
+                                                <option :value="a.id" x-text="a.name"></option>
+                                            </template>
+                                        </select>
+                                    </div>
+                                </template>
+                                <div x-show="!d.anchor_mapping || Object.keys(d.anchor_mapping).length === 0" class="text-xs text-gray-400">无主播映射</div>
+                            </div>
+                        </td>
+                        <td>
+                            <select x-model="d.recruit_team_id" class="form-input text-sm py-1 px-2 min-w-[120px]">
+                                <option value="">选择团队</option>
+                                <template x-for="t in teams" :key="t.id">
+                                    <option :value="t.id" x-text="t.name"></option>
+                                </template>
+                            </select>
+                        </td>
+                        <td>
+                            <button @click="saveDefault(d)" class="btn-primary text-xs py-1 px-3">保存</button>
+                        </td>
+                    </tr>
+                </template>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<script>
+function weekdayDefaultsApp() {
+    return {
+        defaults: [],
+        plans: [],
+        anchors: [],
+        teams: [],
+
+        async loadDefaults() {
+            const [dRes, pRes, aRes, tRes] = await Promise.all([
+                adminFetch('/admin/api/schedule/weekday-defaults'),
+                adminFetch('/admin/api/schedule/plans'),
+                adminFetch('/admin/api/anchors'),
+                adminFetch('/admin/api/recruit-teams'),
+            ]);
+            const [dJ, pJ, aJ, tJ] = await Promise.all([dRes.json(), pRes.json(), aRes.json(), tRes.json()]);
+            this.defaults = (dJ.data || []).map(d => ({
+                ...d,
+                anchor_mapping: d.anchor_mapping || {},
+            }));
+            this.plans = pJ.data || [];
+            this.anchors = aJ.data || [];
+            this.teams = (tJ.data || []).map(t => ({ id: t.id, name: t.name }));
+        },
+
+        async saveDefault(d) {
+            if (!d.plan_id) { alert('请选择排班方案'); return; }
+            const resp = await adminFetch(`/admin/api/schedule/weekday-defaults/${d.weekday}`, {
+                method: 'PUT',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    plan_id: parseInt(d.plan_id),
+                    anchor_mapping: d.anchor_mapping || {},
+                    recruit_team_id: d.recruit_team_id ? parseInt(d.recruit_team_id) : null,
+                }),
+            });
+            const json = await resp.json();
+            if (json.code !== 0) { alert(json.message || '保存失败'); return; }
+            alert(json.message);
+        },
+    };
+}
+</script>
+{% endblock %}

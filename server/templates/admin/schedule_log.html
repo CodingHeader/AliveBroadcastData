@@ -29,6 +29,7 @@
                     <span class="text-sm text-gray-500" x-text="logData.plan.start_time + ' - ' + logData.plan.end_time"></span>
                     <span class="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded" x-text="logData.plan.room_count + '个直播间'"></span>
                     <span class="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded" x-text="'粒度: ' + logData.plan.time_granularity + '分'"></span>
+                    <span x-show="logData.binding?.recruit_team_name" class="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded" x-text="'团队: ' + logData.binding.recruit_team_name"></span>
                     <button @click="showOvertimeModal()" class="ml-auto px-3 py-1 bg-orange-500 text-white text-sm rounded-lg hover:bg-orange-600">临时加班</button>
                 </div>
                 <div class="relative" x-ref="timeline">

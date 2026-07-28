@@ -1,0 +1,187 @@
+{% extends "admin/base.html" %}
+{% block title %}采集记录{% endblock %}
+{% block admin_content %}
+<div x-data="collectionLogApp()" x-init="init()" class="space-y-4">
+    <div class="bg-white p-4 rounded-lg shadow-sm">
+        <h3 class="font-bold text-lg mb-3">📊 采集记录</h3>
+        <div class="flex items-center gap-3 flex-wrap">
+            <input type="date" x-model="sessionDate" class="border rounded-lg px-3 py-2 text-sm" @change="loadLogs()">
+            <select x-model="filterStatus" class="border rounded-lg px-3 py-2 text-sm" @change="loadLogs()">
+                <option value="">全部状态</option>
+                <option value="success">成功</option>
+                <option value="error">失败</option>
+            </select>
+            <select x-model="filterAction" class="border rounded-lg px-3 py-2 text-sm" @change="loadLogs()">
+                <option value="">全部动作</option>
+                <option value="created">新建</option>
+                <option value="updated">更新</option>
+                <option value="no_change">无变化</option>
+                <option value="duplicate">重复</option>
+                <option value="failed">失败</option>
+            </select>
+            <button @click="loadLogs()" class="btn-primary text-sm py-2 px-4">查询</button>
+            <button @click="resetFilter()" class="btn-secondary text-sm py-2 px-4">重置</button>
+        </div>
+    </div>
+
+    <div class="bg-white rounded-lg shadow-sm overflow-hidden">
+        <table class="min-w-full text-sm">
+            <thead class="bg-gray-50">
+                <tr>
+                    <th class="px-4 py-3 text-left">操作时间</th>
+                    <th class="px-4 py-3 text-left">直播日期</th>
+                    <th class="px-4 py-3 text-left">场次</th>
+                    <th class="px-4 py-3 text-center">动作</th>
+                    <th class="px-4 py-3 text-center">状态</th>
+                    <th class="px-4 py-3 text-center">更新内容</th>
+                    <th class="px-4 py-3 text-right">耗时</th>
+                    <th class="px-4 py-3 text-right">操作</th>
+                </tr>
+            </thead>
+            <tbody>
+                <template x-for="log in items" :key="log.id">
+                    <tr class="border-t hover:bg-gray-50">
+                        <td class="px-4 py-3 text-xs" x-text="log.created_at"></td>
+                        <td class="px-4 py-3" x-text="log.session_date || '-'"></td>
+                        <td class="px-4 py-3 text-xs" x-text="(log.session_start_time || '') + ' - ' + (log.session_end_time || '')"></td>
+                        <td class="px-4 py-3 text-center">
+                            <span class="text-xs px-2 py-0.5 rounded" :class="actionClass(log.action)" x-text="actionLabel(log.action)"></span>
+                        </td>
+                        <td class="px-4 py-3 text-center">
+                            <span class="text-xs px-2 py-0.5 rounded" :class="log.status === 'success' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'" x-text="log.status === 'success' ? '成功' : '失败'"></span>
+                        </td>
+                        <td class="px-4 py-3 text-xs text-gray-500" x-text="updateSummary(log)"></td>
+                        <td class="px-4 py-3 text-right text-xs text-gray-500" x-text="log.duration_ms ? (log.duration_ms + 'ms') : '-'"></td>
+                        <td class="px-4 py-3 text-right">
+                            <button @click="showDetail(log)" class="text-blue-600 hover:text-blue-800 text-xs">详情</button>
+                        </td>
+                    </tr>
+                </template>
+                <tr x-show="items.length === 0">
+                    <td colspan="8" class="px-4 py-8 text-center text-gray-400">暂无采集记录</td>
+                </tr>
+            </tbody>
+        </table>
+        <div x-show="total > size" class="px-4 py-3 border-t flex items-center justify-between text-sm">
+            <span class="text-gray-500" x-text="'共 ' + total + ' 条'"></span>
+            <div class="flex gap-2">
+                <button @click="prevPage()" :disabled="page <= 1" class="px-3 py-1 border rounded disabled:opacity-50">上一页</button>
+                <span class="px-3 py-1" x-text="page + '/' + maxPage"></span>
+                <button @click="nextPage()" :disabled="page >= maxPage" class="px-3 py-1 border rounded disabled:opacity-50">下一页</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 详情弹窗 -->
+    <div x-show="detailLog" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" @click.self="detailLog = null">
+        <div class="bg-white rounded-xl p-6 w-[540px] shadow-2xl max-h-[80vh] overflow-y-auto">
+            <h3 class="text-lg font-bold mb-4">采集详情</h3>
+            <div class="space-y-2 text-sm">
+                <div class="grid grid-cols-2 gap-2">
+                    <div><span class="text-gray-500">请求ID：</span><span class="font-mono text-xs" x-text="detailLog.request_id || '-'"></span></div>
+                    <div><span class="text-gray-500">脚本版本：</span><span x-text="detailLog.script_version || '-'"></span></div>
+                    <div><span class="text-gray-500">直播日期：</span><span x-text="detailLog.session_date || '-'"></span></div>
+                    <div><span class="text-gray-500">场次时间：</span><span x-text="(detailLog.session_start_time || '') + ' - ' + (detailLog.session_end_time || '')"></span></div>
+                    <div><span class="text-gray-500">直播间：</span><span x-text="detailLog.room_index ? ('直播间' + detailLog.room_index) : '-'"></span></div>
+                    <div><span class="text-gray-500">动作：</span><span x-text="actionLabel(detailLog.action)"></span></div>
+                </div>
+                <div class="border-t pt-2 mt-2">
+                    <span class="text-gray-500 font-medium">更新内容：</span>
+                    <div x-show="detailLog.updated_fields" class="mt-1 bg-gray-50 p-2 rounded text-xs">
+                        <span x-text="detailLog.updated_fields"></span>
+                    </div>
+                    <div x-show="!detailLog.updated_fields" class="text-gray-400 text-xs mt-1">无更新字段记录</div>
+                </div>
+                <div class="border-t pt-2 mt-2 grid grid-cols-2 gap-2 text-xs">
+                    <div><span class="text-gray-500">指标数：</span><span x-text="detailLog.metrics_count || 0"></span></div>
+                    <div><span class="text-gray-500">新增线索：</span><span x-text="detailLog.leads_inserted || 0"></span></div>
+                    <div><span class="text-gray-500">更新线索：</span><span x-text="detailLog.leads_updated || 0"></span></div>
+                    <div><span class="text-gray-500">新增评论：</span><span x-text="detailLog.comments_inserted || 0"></span></div>
+                    <div><span class="text-gray-500">高意向：</span><span x-text="detailLog.high_intent_inserted || 0"></span></div>
+                    <div><span class="text-gray-500">私信：</span><span x-text="detailLog.private_messages_inserted || 0"></span></div>
+                    <div><span class="text-gray-500">耗时：</span><span x-text="detailLog.duration_ms ? (detailLog.duration_ms + 'ms') : '-'"></span></div>
+                    <div><span class="text-gray-500">状态：</span><span :class="detailLog.status === 'success' ? 'text-green-600' : 'text-red-600'" x-text="detailLog.status === 'success' ? '成功' : '失败'"></span></div>
+                </div>
+                <div x-show="detailLog.message" class="border-t pt-2 mt-2">
+                    <span class="text-gray-500">消息：</span>
+                    <p class="text-xs mt-1 bg-yellow-50 p-2 rounded" x-text="detailLog.message"></p>
+                </div>
+            </div>
+            <button @click="detailLog = null" class="mt-4 w-full py-2 bg-gray-100 rounded-lg hover:bg-gray-200">关闭</button>
+        </div>
+    </div>
+</div>
+
+<script>
+function collectionLogApp() {
+    return {
+        sessionDate: '',
+        filterStatus: '',
+        filterAction: '',
+        items: [],
+        total: 0,
+        page: 1,
+        size: 20,
+        maxPage: 1,
+        detailLog: null,
+
+        init() { this.loadLogs(); },
+
+        async loadLogs() {
+            let url = '/admin/api/collection-logs?page=' + this.page + '&size=' + this.size;
+            if (this.sessionDate) url += '&session_date=' + this.sessionDate;
+            if (this.filterStatus) url += '&status=' + this.filterStatus;
+            if (this.filterAction) url += '&action=' + this.filterAction;
+            try {
+                const r = await adminFetch(url);
+                const j = await r.json();
+                if (j.code === 0) {
+                    this.items = j.data.items || [];
+                    this.total = j.data.total || 0;
+                    this.maxPage = Math.max(1, Math.ceil(this.total / this.size));
+                }
+            } catch(e) { console.error('加载失败', e); }
+        },
+
+        resetFilter() {
+            this.sessionDate = '';
+            this.filterStatus = '';
+            this.filterAction = '';
+            this.page = 1;
+            this.loadLogs();
+        },
+
+        prevPage() { if (this.page > 1) { this.page--; this.loadLogs(); } },
+        nextPage() { if (this.page < this.maxPage) { this.page++; this.loadLogs(); } },
+
+        actionClass(action) {
+            const map = { 'created': 'bg-green-100 text-green-800', 'updated': 'bg-blue-100 text-blue-800', 'no_change': 'bg-gray-100 text-gray-600', 'duplicate': 'bg-yellow-100 text-yellow-800', 'failed': 'bg-red-100 text-red-800' };
+            return map[action] || 'bg-gray-100';
+        },
+
+        actionLabel(action) {
+            const map = { 'created': '新建', 'updated': '更新', 'no_change': '无变化', 'duplicate': '重复', 'failed': '失败' };
+            return map[action] || action;
+        },
+
+        updateSummary(log) {
+            const parts = [];
+            if (log.metrics_count) parts.push('指标' + log.metrics_count);
+            if (log.leads_inserted) parts.push('线索+' + log.leads_inserted);
+            if (log.leads_updated) parts.push('线索~' + log.leads_updated);
+            if (log.comments_inserted) parts.push('评论+' + log.comments_inserted);
+            return parts.join(' ') || '-';
+        },
+
+        async showDetail(log) {
+            try {
+                const r = await adminFetch('/admin/api/collection-logs/' + log.id);
+                const j = await r.json();
+                if (j.code === 0) { this.detailLog = j.data; }
+                else { alert(j.message || '加载失败'); }
+            } catch(e) { alert('加载失败: ' + e.message); }
+        }
+    };
+}
+</script>
+{% endblock %}

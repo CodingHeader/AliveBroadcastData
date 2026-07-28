@@ -16,7 +16,7 @@
                 </div>
                 <div class="text-sm text-gray-600 space-y-1">
                     <div>开播: <span x-text="p.start_time"></span> ~ 关播: <span x-text="p.end_time"></span></div>
-                    <div>粒度: <span x-text="p.time_granularity + '分钟'"></span> | 直播间: <span x-text="p.room_count"></span> | 主播: <span x-text="p.anchor_count"></span>人</div>
+                    <div>粒度: <span x-text="p.time_granularity + '分钟'"></span> | 直播间: <span x-text="p.room_count"></span> | 主播: <span x-text="p.anchor_count"></span>人 | 运营: <span x-text="p.operator_count || 1"></span>人</div>
                     <div x-show="p.notes" class="text-gray-400" x-text="p.notes"></div>
                 </div>
                 <div class="flex space-x-2 mt-3 pt-2 border-t">
@@ -51,6 +51,11 @@
                         <option value="1">1人</option><option value="2">2人</option><option value="3">3人</option><option value="4">4人</option><option value="5">5人</option><option value="6">6人</option>
                     </select>
                 </div>
+                <div><label class="text-sm text-gray-600">运营人数</label>
+                    <select x-model="form.operator_count" class="form-input">
+                        <option value="1">1人</option><option value="2">2人</option><option value="3">3人</option><option value="4">4人</option><option value="5">5人</option>
+                    </select>
+                </div>
                 <div><label class="text-sm text-gray-600">是否有效</label>
                     <select x-model="form.is_active" class="form-input">
                         <option value="true">有效</option><option value="false">停用</option>
@@ -78,7 +83,10 @@
                 <template x-for="i in detailAnchors" :key="i">
                     <span class="inline-block bg-blue-100 text-blue-700 px-2 py-0.5 rounded mr-1" x-text="'主播'+i"></span>
                 </template>
-                <span class="text-gray-500 ml-2">在日历绑定时关联真实主播</span>
+                <template x-for="i in detailOperators" :key="i">
+                    <span class="inline-block bg-orange-100 text-orange-700 px-2 py-0.5 rounded mr-1" x-text="'运营'+i"></span>
+                </template>
+                <span class="text-gray-500 ml-2">在日历绑定时关联真实主播和运营</span>
             </div>
             <!-- 排班表格 -->
             <div class="overflow-x-auto">
@@ -114,6 +122,15 @@
                                                     <option :value="i" :selected="String(getSlotData(slot, r).anchor_slot) === String(i)" x-text="'主播'+i"></option>
                                                 </template>
                                             </select>
+                                            <select class="form-input py-0.5 text-xs w-20"
+                                                x-show="getSlotData(slot, r).slot_status === 'on_air_anchor'"
+                                                :value="getSlotData(slot, r).operator_slot"
+                                                @change="getSlotData(slot, r).operator_slot = $event.target.value">
+                                                <option value="" :selected="!getSlotData(slot, r).operator_slot">-</option>
+                                                <template x-for="i in detailOperators" :key="i">
+                                                    <option :value="i" :selected="String(getSlotData(slot, r).operator_slot) === String(i)" x-text="'运营'+i"></option>
+                                                </template>
+                                            </select>
                                         </div>
                                     </td>
                                 </template>
@@ -134,10 +151,10 @@ function scheduleApp() {
     return {
         plans: [], showCreateModal: false, showDetailModal: false,
         editingPlan: null,
-        detailPlan: { id: 0, name: '', start_time: '08:00', end_time: '23:00', time_granularity: 60, room_count: 2, anchor_count: 5, is_active: true, notes: '' },
-        detailSlots: [], detailAnchors: [], detailRooms: [],
+        detailPlan: { id: 0, name: '', start_time: '08:00', end_time: '23:00', time_granularity: 60, room_count: 2, anchor_count: 5, operator_count: 1, is_active: true, notes: '' },
+        detailSlots: [], detailAnchors: [], detailOperators: [], detailRooms: [],
         anchorParttime: {},
-        form: { name:'', start_time:'08:00', end_time:'23:00', time_granularity:'60', room_count:'2', anchor_count:'5', is_active:'true', notes:'' },
+        form: { name:'', start_time:'08:00', end_time:'23:00', time_granularity:'60', room_count:'2', anchor_count:'5', operator_count:'1', is_active:'true', notes:'' },
 
         async loadData() {
             const r = await adminFetch('/admin/api/schedule/plans'); const j = await r.json();
@@ -152,13 +169,14 @@ function scheduleApp() {
             this.form.time_granularity = String(p.time_granularity);
             this.form.room_count = String(p.room_count);
             this.form.anchor_count = String(p.anchor_count);
+            this.form.operator_count = String(p.operator_count || 1);
             this.form.is_active = String(p.is_active);
             this.form.notes = p.notes || '';
             this.showCreateModal = true;
         },
         async savePlan() {
             const data = {...this.form, time_granularity:parseInt(this.form.time_granularity),
-                room_count:parseInt(this.form.room_count), anchor_count:parseInt(this.form.anchor_count),
+                room_count:parseInt(this.form.room_count), anchor_count:parseInt(this.form.anchor_count), operator_count:parseInt(this.form.operator_count || '1'),
                 is_active:this.form.is_active==='true'};
             if (this.editingPlan) {
                 await adminFetch(`/admin/api/schedule/plans/${this.editingPlan.id}`, {method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
@@ -175,7 +193,7 @@ function scheduleApp() {
         },
         async openDetail(planId) {
             const r = await adminFetch(`/admin/api/schedule/plans/${planId}/slots`); const j = await r.json();
-            if(j.code !== 0) return;
+            if(j.code !== 0) { alert(j.message || '打开排班明细失败'); return; }
             const plan = j.data.plan;
             // 逐属性赋值 detailPlan，保持 Alpine Proxy 追踪
             this.detailPlan.id = plan.id;
@@ -185,10 +203,12 @@ function scheduleApp() {
             this.detailPlan.time_granularity = plan.time_granularity;
             this.detailPlan.room_count = plan.room_count;
             this.detailPlan.anchor_count = plan.anchor_count;
+            this.detailPlan.operator_count = plan.operator_count || 1;
             this.detailPlan.is_active = plan.is_active;
             this.detailPlan.notes = plan.notes;
             // 显式计算主播/直播间数组，确保首次渲染即有值（用字符串匹配 select option value 类型）
             this.detailAnchors = Array.from({length: plan.anchor_count || 0}, (_, i) => String(i + 1));
+            this.detailOperators = Array.from({length: plan.operator_count || 1}, (_, i) => String(i + 1));
             this.detailRooms = Array.from({length: plan.room_count || 2}, (_, i) => i + 1);
             // 将 API 返回的 anchor_slot 统一转为字符串，与 <option :value> 类型一致
             // 对 on_air_anchor 但 anchor_slot 为空的 slot，自动填充默认值 '1'
@@ -240,7 +260,7 @@ function scheduleApp() {
             if(s.slot_status !== 'on_air_anchor') s.anchor_slot = '';
         },
         async saveSlots() {
-            const slots = this.detailSlots.map(s => ({ time_slot:s.time_slot, room_index:s.room_index, slot_status:s.slot_status, anchor_slot:s.anchor_slot || null }));
+            const slots = this.detailSlots.map(s => ({ time_slot:s.time_slot, room_index:s.room_index, slot_status:s.slot_status, anchor_slot:s.anchor_slot || null, operator_slot:s.operator_slot || null }));
             await adminFetch(`/admin/api/schedule/plans/${this.detailPlan.id}/slots`, {method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({slots})});
             this.showDetailModal = false; this.loadData();
         }

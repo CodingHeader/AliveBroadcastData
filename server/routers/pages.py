@@ -107,3 +107,28 @@ async def admin_anchor_salary(request: Request):
 @router.get("/admin/poll-logs", response_class=HTMLResponse)
 async def admin_poll_logs(request: Request):
     return templates.TemplateResponse("admin/poll_logs.html", {"request": request})
+
+
+@router.get("/admin/live-plans", response_class=HTMLResponse)
+async def admin_live_plans(request: Request):
+    return templates.TemplateResponse("admin/live_plans.html", {"request": request})
+
+
+@router.get("/admin/collection-logs", response_class=HTMLResponse)
+async def admin_collection_logs(request: Request):
+    return templates.TemplateResponse("admin/collection_logs.html", {"request": request})
+
+
+@router.get("/admin/multidim-import", response_class=HTMLResponse)
+async def admin_multidim_import(request: Request):
+    return templates.TemplateResponse("admin/multidim_import.html", {"request": request})
+
+
+@router.get("/admin/multidim-logs", response_class=HTMLResponse)
+async def admin_multidim_logs(request: Request):
+    return templates.TemplateResponse("admin/multidim_logs.html", {"request": request})
+
+
+@router.get("/admin/weekday-defaults", response_class=HTMLResponse)
+async def admin_weekday_defaults(request: Request):
+    return templates.TemplateResponse("admin/weekday_defaults.html", {"request": request})

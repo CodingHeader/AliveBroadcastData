@@ -19,9 +19,9 @@ if (typeof adminFetch === 'undefined') {
 function sidebarApp() {
     // 首次进入：菜单全缩起；后续访问：恢复localStorage保存的状态
     const _initPath = location.pathname;
-    const _knownPaths = {anchor:['anchors','anchor-income','anchor-salary'],schedule:['schedules','schedule-calendar','schedule-log'],plan:['ad-accounts','ad-plans','leads'],extend:['deals','recruit-teams'],config:['/admin/ai','/admin/email','/admin/settings','clue-configs','dashboard-tabs','poll-logs']};
+    const _knownPaths = {anchor:['anchors','anchor-income','anchor-salary'],plan:['ad-accounts','schedules','live-plans','weekday-defaults','schedule-calendar','ad-plans','leads','schedule-log'],extend:['deals','recruit-teams'],config:['/admin/ai','/admin/email','/admin/settings','clue-configs','dashboard-tabs','poll-logs'],import:['multidim-import','multidim-logs','collection-logs']};
     const _hasSaved = localStorage.getItem('sidebar_expand') !== null;
-    const _savedExpand = _hasSaved ? JSON.parse(localStorage.getItem('sidebar_expand')) : {anchor:false,schedule:false,plan:false,extend:false,config:false};
+    const _savedExpand = _hasSaved ? JSON.parse(localStorage.getItem('sidebar_expand')) : {anchor:false,schedule:false,plan:false,extend:false,config:false,import:false};
     // 仅当localStorage有保存记录时，才根据当前路径自动展开
     if (_hasSaved) {
         Object.keys(_knownPaths).forEach(k => {
@@ -128,31 +128,36 @@ function sidebarApp() {
                 </div>
             </div>
 
-            <!-- ===== 排班管理 ===== -->
-            <div class="mb-2">
-                <button @click="toggleExpand('schedule')" class="w-full flex items-center gap-2 text-sm text-gray-400 hover:text-white px-3 py-2 rounded-lg transition-colors">
-                    <svg class="w-4 h-4 transition-transform" :class="expand.schedule ? 'rotate-90' : ''" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
-                    <span class="font-medium text-white">排班管理</span>
-                </button>
-                <div x-show="expand.schedule" class="ml-2 mt-1 space-y-0.5">
-                    <a href="/admin/schedules" @click.prevent="navigateTo('/admin/schedules')" :class="isActive('/admin/schedules') ? 'sidebar-link active' : 'sidebar-link'" class="sidebar-link flex items-center gap-2 pl-9 text-sm">排班方案</a>
-                    <a href="/admin/schedule-calendar" @click.prevent="navigateTo('/admin/schedule-calendar')" :class="isActive('/admin/schedule-calendar') ? 'sidebar-link active' : 'sidebar-link'" class="sidebar-link flex items-center gap-2 pl-9 text-sm">排班日历</a>
-                    <a href="/admin/schedule-log" @click.prevent="navigateTo('/admin/schedule-log')" :class="isActive('/admin/schedule-log') ? 'sidebar-link active' : 'sidebar-link'" class="sidebar-link flex items-center gap-2 pl-9 text-sm">排班日志</a>
-                </div>
-            </div>
-
-            <!-- ===== 直播计划 ===== -->
+            <!-- ===== 直播管理 ===== -->
             <div class="mb-2">
                 <button @click="toggleExpand('plan')" class="w-full flex items-center gap-2 text-sm text-gray-400 hover:text-white px-3 py-2 rounded-lg transition-colors">
                     <svg class="w-4 h-4 transition-transform" :class="expand.plan ? 'rotate-90' : ''" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"/></svg>
-                    <span class="font-medium text-white">直播计划</span>
+                    <span class="font-medium text-white">直播管理</span>
                 </button>
                 <div x-show="expand.plan" class="ml-2 mt-1 space-y-0.5">
                     <a href="/admin/ad-accounts" @click.prevent="navigateTo('/admin/ad-accounts')" :class="isActive('/admin/ad-accounts') ? 'sidebar-link active' : 'sidebar-link'" class="sidebar-link flex items-center gap-2 pl-9 text-sm">直播账户</a>
+                    <a href="/admin/schedules" @click.prevent="navigateTo('/admin/schedules')" :class="isActive('/admin/schedules') ? 'sidebar-link active' : 'sidebar-link'" class="sidebar-link flex items-center gap-2 pl-9 text-sm">排班方案</a>
+                    <a href="/admin/live-plans" @click.prevent="navigateTo('/admin/live-plans')" :class="isActive('/admin/live-plans') ? 'sidebar-link active' : 'sidebar-link'" class="sidebar-link flex items-center gap-2 pl-9 text-sm">直播计划</a>
+                    <a href="/admin/weekday-defaults" @click.prevent="navigateTo('/admin/weekday-defaults')" :class="isActive('/admin/weekday-defaults') ? 'sidebar-link active' : 'sidebar-link'" class="sidebar-link flex items-center gap-2 pl-9 text-sm">默认配置</a>
+                    <a href="/admin/schedule-calendar" @click.prevent="navigateTo('/admin/schedule-calendar')" :class="isActive('/admin/schedule-calendar') ? 'sidebar-link active' : 'sidebar-link'" class="sidebar-link flex items-center gap-2 pl-9 text-sm">直播日历</a>
                     <a href="/admin/ad-plans" @click.prevent="navigateTo('/admin/ad-plans')" :class="isActive('/admin/ad-plans') ? 'sidebar-link active' : 'sidebar-link'" class="sidebar-link flex items-center gap-2 pl-9 text-sm">投流计划</a>
                     <a href="/admin/leads" @click.prevent="navigateTo('/admin/leads')" :class="isActive('/admin/leads') ? 'sidebar-link active' : 'sidebar-link'" class="sidebar-link flex items-center gap-2 pl-9 text-sm">线索管理</a>
+                    <a href="/admin/schedule-log" @click.prevent="navigateTo('/admin/schedule-log')" :class="isActive('/admin/schedule-log') ? 'sidebar-link active' : 'sidebar-link'" class="sidebar-link flex items-center gap-2 pl-9 text-sm">直播日志</a>
+                </div>
+            </div>
+
+            <!-- ===== 数据导入 ===== -->
+            <div class="mb-2">
+                <button @click="toggleExpand('import')" class="w-full flex items-center gap-2 text-sm text-gray-400 hover:text-white px-3 py-2 rounded-lg transition-colors">
+                    <svg class="w-4 h-4 transition-transform" :class="expand.import ? 'rotate-90' : ''" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5 5-5M12 15V3"/></svg>
+                    <span class="font-medium text-white">数据导入</span>
+                </button>
+                <div x-show="expand.import" class="ml-2 mt-1 space-y-0.5">
+                    <a href="/admin/multidim-import" @click.prevent="navigateTo('/admin/multidim-import')" :class="isActive('/admin/multidim-import') ? 'sidebar-link active' : 'sidebar-link'" class="sidebar-link flex items-center gap-2 pl-9 text-sm">多维导入</a>
+                    <a href="/admin/multidim-logs" @click.prevent="navigateTo('/admin/multidim-logs')" :class="isActive('/admin/multidim-logs') ? 'sidebar-link active' : 'sidebar-link'" class="sidebar-link flex items-center gap-2 pl-9 text-sm">导入记录</a>
+                    <a href="/admin/collection-logs" @click.prevent="navigateTo('/admin/collection-logs')" :class="isActive('/admin/collection-logs') ? 'sidebar-link active' : 'sidebar-link'" class="sidebar-link flex items-center gap-2 pl-9 text-sm">采集记录</a>
                 </div>
             </div>
 

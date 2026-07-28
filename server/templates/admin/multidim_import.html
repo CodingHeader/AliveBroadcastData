@@ -1,0 +1,260 @@
+{% extends "admin/base.html" %}
+{% block title %}多维数据导入{% endblock %}
+{% block admin_content %}
+<div x-data="multidimImportApp()" x-init="init()" class="space-y-4">
+    <!-- Toast 弹窗 -->
+    <div x-show="toast.show" class="fixed top-4 right-4 z-50 transition-all duration-300"
+         :class="toast.type === 'success' ? 'bg-green-600' : 'bg-red-600'"
+         x-transition:enter="transform ease-out duration-300"
+         x-transition:enter-start="translate-x-full opacity-0"
+         x-transition:enter-end="translate-x-0 opacity-100"
+         style="max-width: 420px;">
+        <div class="text-white px-5 py-4 rounded-lg shadow-lg flex items-start gap-3">
+            <span class="text-xl mt-0.5" x-text="toast.type === 'success' ? '✅' : '❌'"></span>
+            <div class="flex-1 min-w-0">
+                <p class="font-medium text-sm" x-text="toast.title"></p>
+                <p class="text-xs opacity-90 mt-0.5" x-text="toast.message"></p>
+            </div>
+            <button @click="toast.show = false" class="text-white opacity-70 hover:opacity-100 text-lg leading-none">&times;</button>
+        </div>
+    </div>
+
+    <!-- 文件上传区 -->
+    <div class="bg-white p-4 rounded-lg shadow-sm">
+        <h3 class="font-bold text-lg mb-3 flex items-center gap-2">
+            <svg class="w-5 h-5 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5 5-5M12 15V3"/></svg>
+            多维数据导入
+        </h3>
+        <div class="flex items-center gap-3">
+            <label class="btn-primary text-sm py-2 px-4 cursor-pointer">
+                📁 选择文件
+                <input type="file" accept=".xlsx,.xls,.csv" @change="handleFileSelect($event)" class="hidden">
+            </label>
+            <button @click="uploadAndPreview()" :disabled="!selectedFile || loading" class="btn-success text-sm py-2 px-4 disabled:opacity-50">
+                <span x-show="!loading">🔍 解析预览</span>
+                <span x-show="loading">⏳ 解析中...</span>
+            </button>
+            <span class="text-sm text-gray-500" x-text="selectedFile ? selectedFile.name : '未选择文件'"></span>
+        </div>
+        <div class="flex gap-4 mt-3 text-xs text-gray-400">
+            <span>支持格式: .xlsx, .xls, .csv</span>
+            <span>多Sheet自动识别</span>
+            <span>联系方式+微信自动去重</span>
+        </div>
+    </div>
+
+    <!-- Sheet预览区 -->
+    <div x-show="sheets.length > 0" class="space-y-3">
+        <h3 class="font-bold text-lg flex items-center gap-2">
+            <span>解析结果</span>
+            <span class="text-sm font-normal text-gray-500" x-text="`(${sheets.length} 个Sheet)`"></span>
+            <span class="ml-auto text-sm text-gray-500">
+                共 <span x-text="summary.total"></span> 行，
+                可导入 <span class="text-green-600 font-medium" x-text="summary.total_insert"></span> 条，
+                跳过 <span class="text-orange-600 font-medium" x-text="summary.total_skip"></span> 条
+            </span>
+        </h3>
+
+        <template x-for="(sheet, idx) in sheets" :key="idx">
+            <div class="bg-white rounded-lg shadow-sm overflow-hidden">
+                <div class="flex items-center justify-between px-4 py-3 bg-gray-50 border-b">
+                    <div class="flex items-center gap-3">
+                        <span class="text-sm font-medium" x-text="`Sheet ${idx+1}: ${sheet.name}`"></span>
+                        <span class="text-xs px-2 py-0.5 rounded" :class="typeBadgeClass(sheet.type)" x-text="typeLabel(sheet.type)"></span>
+                        <span x-show="sheet.is_operational" class="text-xs bg-yellow-100 text-yellow-800 px-2 py-0.5 rounded">运营类（不去重）</span>
+                    </div>
+                    <div class="flex items-center gap-4 text-sm text-gray-500">
+                        <span>共 <strong x-text="sheet.total_rows"></strong> 行</span>
+                        <span class="text-green-600">新增 <strong x-text="sheet.will_insert"></strong></span>
+                        <span x-show="sheet.will_skip > 0" class="text-orange-600">跳过 <strong x-text="sheet.will_skip"></strong></span>
+                        <button @click="toggleSheetExpand(idx)" class="text-blue-500 hover:text-blue-700 text-xs">
+                            <span x-text="sheet.expanded ? '收起' : '展开'"></span>
+                        </button>
+                    </div>
+                </div>
+                <div x-show="sheet.expanded" class="p-4">
+                    <div class="mb-3">
+                        <span class="text-xs text-gray-500">列名：</span>
+                        <div class="flex flex-wrap gap-1 mt-1">
+                            <template x-for="h in sheet.headers" :key="h">
+                                <span class="text-xs bg-gray-100 text-gray-700 px-2 py-0.5 rounded" x-text="h || '(空)'"></span>
+                            </template>
+                        </div>
+                    </div>
+                    <div x-show="sheet.sample_skips.length > 0" class="mb-3 bg-orange-50 p-3 rounded">
+                        <p class="text-sm font-medium text-orange-700 mb-2">⏭️ 跳过记录（前5条）</p>
+                        <table class="min-w-full text-xs">
+                            <thead><tr class="text-left text-orange-600">
+                                <th class="px-2 py-1">行号</th>
+                                <th class="px-2 py-1">联系方式</th>
+                                <th class="px-2 py-1">微信</th>
+                                <th class="px-2 py-1">原因</th>
+                                <th class="px-2 py-1">说明</th>
+                            </tr></thead>
+                            <tbody>
+                                <template x-for="s in sheet.sample_skips" :key="s.row_index">
+                                    <tr class="border-t border-orange-100">
+                                        <td class="px-2 py-1" x-text="s.row_index"></td>
+                                        <td class="px-2 py-1 font-mono" x-text="s.contact_norm"></td>
+                                        <td class="px-2 py-1" x-text="s.wechat_norm"></td>
+                                        <td class="px-2 py-1">
+                                            <span x-show="s.reason==='duplicate'" class="font-bold text-red-600">重复（已存在）</span>
+                                            <span x-show="s.reason==='missing_contact'" class="text-yellow-600">缺联系方式</span>
+                                            <span x-show="s.reason==='invalid_contact'" class="text-yellow-600">无效联系方式</span>
+                                            <span x-show="s.reason==='template_empty'" class="text-gray-500">预留数据</span>
+                                        </td>
+                                        <td class="px-2 py-1 text-gray-500" x-text="s.detail"></td>
+                                    </tr>
+                                </template>
+                            </tbody>
+                        </table>
+                    </div>
+                    <div class="text-xs text-gray-400">
+                        <span x-show="sheet.type==='unknown'" class="text-yellow-600">⚠️ 未识别类型，请确认列名格式</span>
+                    </div>
+                </div>
+            </div>
+        </template>
+
+        <div class="sticky bottom-0 bg-white p-4 rounded-lg shadow-lg border-t-2 border-green-500 flex items-center justify-between">
+            <div class="text-sm">
+                <span class="text-green-600 font-medium" x-text="`✅ 将新增 ${summary.total_insert} 条`"></span>
+                <span x-show="summary.total_skip > 0" class="text-orange-600 font-medium ml-3" x-text="`⏭️ 将跳过 ${summary.total_skip} 条`"></span>
+            </div>
+            <button @click="confirmImport()" :disabled="confirming" class="btn-primary text-sm py-2 px-6 disabled:opacity-50">
+                <span x-show="!confirming">✅ 确认导入</span>
+                <span x-show="confirming">⏳ 导入中...</span>
+            </button>
+        </div>
+    </div>
+</div>
+
+<script>
+function multidimImportApp() {
+    return {
+        selectedFile: null,
+        loading: false,
+        sheets: [],
+        summary: {total:0, total_insert:0, total_skip:0},
+        confirming: false,
+        toast: { show: false, type: 'success', title: '', message: '' },
+
+        init() {
+            this.sheets = [];
+            this.summary = {total:0, total_insert:0, total_skip:0};
+        },
+
+        showToast(type, title, message) {
+            this.toast = { show: true, type, title, message };
+            setTimeout(() => { this.toast.show = false; }, 3000);
+        },
+
+        handleFileSelect(event) {
+            this.selectedFile = event.target.files[0] || null;
+            this.toast.show = false;
+        },
+
+        async uploadAndPreview() {
+            if (!this.selectedFile) { this.showToast('error', '请选择文件', '请先选择要导入的文件'); return; }
+            this.loading = true;
+            this.toast.show = false;
+            this.sheets = [];
+
+            const formData = new FormData();
+            formData.append('file', this.selectedFile);
+
+            try {
+                const resp = await adminFetch('/admin/api/multidim/upload', {
+                    method: 'POST',
+                    body: formData,
+                });
+                const json = await resp.json();
+
+                if (json.code !== 0) {
+                    this.showToast('error', '解析失败', json.message || '文件解析失败');
+                    this.loading = false;
+                    return;
+                }
+
+                this.sheets = (json.data?.sheets || []).map(s => ({
+                    ...s, expanded: false, rows: [],
+                }));
+
+                this.summary = json.data?.summary || {total:0, total_insert:0, total_skip:0};
+
+                this.sheets = this.sheets.map(s => ({
+                    ...s, expanded: s.will_skip > 0,
+                }));
+
+            } catch(e) {
+                this.showToast('error', '请求失败', '上传解析请求失败: ' + e.message);
+            }
+
+            this.loading = false;
+        },
+
+        toggleSheetExpand(idx) {
+            this.sheets = this.sheets.map((s, i) => ({
+                ...s, expanded: i === idx ? !s.expanded : s.expanded,
+            }));
+        },
+
+        typeLabel(type) {
+            const labels = {education: '教育在线', douyin_ops: '抖音代运营', moment_ad: '朋友圈广告', live_lead: '直播数据分配', schedule: '直播排班', operational: '运营值班', unknown: '未识别'};
+            return labels[type] || type;
+        },
+
+        typeBadgeClass(type) {
+            const classes = {education: 'bg-green-100 text-green-800', douyin_ops: 'bg-blue-100 text-blue-800', moment_ad: 'bg-purple-100 text-purple-800', live_lead: 'bg-teal-100 text-teal-800', schedule: 'bg-yellow-100 text-yellow-800', operational: 'bg-gray-100 text-gray-800', unknown: 'bg-red-100 text-red-800'};
+            return classes[type] || 'bg-gray-100 text-gray-800';
+        },
+
+        async confirmImport() {
+            if (this.sheets.length === 0) return;
+            this.confirming = true;
+            this.toast.show = false;
+
+            const formData = new FormData();
+            formData.append('file', this.selectedFile);
+
+            try {
+                const resp = await adminFetch('/admin/api/multidim/confirm', {
+                    method: 'POST',
+                    body: formData,
+                });
+                const confirmJson = await resp.json();
+
+                if (confirmJson.code !== 0) {
+                    this.showToast('error', '导入失败', confirmJson.message || '导入失败');
+                    this.confirming = false;
+                    return;
+                }
+
+                const d = confirmJson.data || {};
+                const msg = `成功${d.inserted_count || 0}条，跳过${d.skipped_count || 0}条`;
+                this.showToast('success', '导入完成', msg);
+                // 清空预览区，3秒后自动重置
+                setTimeout(() => { this.resetAll(); }, 3000);
+
+            } catch(e) {
+                this.showToast('error', '导入失败', '导入请求失败: ' + e.message);
+            }
+
+            this.confirming = false;
+        },
+
+        resetAll() {
+            this.selectedFile = null;
+            this.loading = false;
+            this.sheets = [];
+            this.summary = {total:0, total_insert:0, total_skip:0};
+            this.confirming = false;
+            this.toast.show = false;
+
+            const fileInput = document.querySelector('input[type="file"]');
+            if (fileInput) fileInput.value = '';
+        },
+    };
+}
+</script>
+{% endblock %}

@@ -4,14 +4,16 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
 from pathlib import Path
-from database import init_db
+from database import init_db, db_health_check
 import logging, traceback
 
+import os
 BASE_DIR = Path(__file__).resolve().parent
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    db_health_check()
     try:
         from services.scheduler import start_scheduler
         start_scheduler()
@@ -26,9 +28,10 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="AliveBroadcastData", lifespan=lifespan)
 
+ALLOWED_ORIGINS = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "").split(",") if o.strip()] or ["http://localhost:12306", "http://127.0.0.1:12306"]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -62,4 +65,4 @@ async def general_exception_handler(request, exc):
 if __name__ == "__main__":
     import uvicorn
     from config import HOST, PORT
-    uvicorn.run("main:app", host=HOST, port=PORT, reload=True)
+    uvicorn.run("main:app", host=HOST, port=PORT, reload=False)

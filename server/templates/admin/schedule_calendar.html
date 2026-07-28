@@ -2,7 +2,7 @@
 {% block admin_content %}
 <div x-data="calendarApp()" x-init="loadData()" class="space-y-4">
     <div class="flex justify-between items-center">
-        <h2 class="text-xl font-bold">排班日历</h2>
+        <h2 class="text-xl font-bold">直播日历</h2>
         <div class="flex items-center space-x-2">
             <button @click="prevMonth()" class="px-3 py-1 border rounded hover:bg-gray-50 text-lg font-bold">&lt;</button>
             <span class="font-bold text-lg min-w-[120px] text-center" x-text="currentYear + '年' + currentMonth + '月'"></span>
@@ -19,12 +19,38 @@
         </div>
         <div class="grid grid-cols-7">
             <template x-for="cell in calendarCells" :key="cell.key">
-                <div class="min-h-[80px] border-b border-r p-2 cursor-pointer hover:bg-blue-50 transition-colors"
-                    :class="{'bg-gray-50': !cell.current, 'bg-blue-50': cell.selected, 'ring-2 ring-blue-400': cell.selected, 'bg-yellow-50': cell.isToday && !cell.selected}"
+                <div class="min-h-[80px] border-b border-r p-1.5 cursor-pointer hover:bg-blue-50 transition-colors"
+                    :class="{'bg-gray-50': !cell.current, 'bg-blue-50': cell.selected, 'ring-2 ring-blue-400': cell.selected, 'bg-yellow-50': cell.isToday && !cell.selected,
+                             'bg-green-100': cell.current && cell.daySchedule && cell.isPast,
+                             'bg-blue-100': cell.current && cell.daySchedule && !cell.isPast}"
                     @click="selectDate(cell)">
-                    <div class="text-sm" :class="cell.current ? (cell.isToday ? 'bg-blue-500 text-white rounded-full w-6 h-6 flex items-center justify-center font-bold' : 'text-gray-900 font-medium') : 'text-gray-400'" x-text="cell.day"></div>
-                    <div x-show="cell.binding" class="mt-1">
-                        <span class="inline-block bg-green-100 text-green-700 text-xs px-1.5 py-0.5 rounded" x-text="cell.binding?.plan_name"></span>
+                    <div class="text-xs" :class="cell.current ? (cell.isToday ? 'bg-blue-500 text-white rounded-full w-5 h-5 flex items-center justify-center font-bold' : 'text-gray-900 font-medium') : 'text-gray-400'" x-text="cell.day"></div>
+                    <!-- 状态标识 -->
+                    <div x-show="cell.daySchedule" class="mt-0.5">
+                        <span x-show="cell.isPast" class="text-[10px] text-green-600 font-medium">✓ 已播完</span>
+                        <span x-show="cell.isToday" class="text-[10px] text-yellow-600 font-medium">● 正在播</span>
+                        <span x-show="!cell.isPast && !cell.isToday" class="text-[10px] text-blue-600 font-medium">○ 未开播</span>
+                    </div>
+                    <div x-show="cell.daySchedule" class="mt-0.5 space-y-0.5">
+                        <template x-for="a in (cell.daySchedule?.anchors || []).slice(0, 3)" :key="a.anchor_name">
+                            <div class="text-[10px] leading-tight truncate" :class="a.total_hours > 0 ? 'text-blue-600' : 'text-gray-400'">
+                                <span x-text="a.anchor_name"></span>
+                                <span x-text="`${a.total_hours}h`"></span>
+                            </div>
+                        </template>
+                        <div x-show="(cell.daySchedule?.anchors || []).length > 3" class="text-[10px] text-gray-400">+<span x-text="(cell.daySchedule?.anchors || []).length - 3"></span>人</div>
+                    </div>
+                    <div x-show="cell.binding && !cell.daySchedule" class="mt-0.5">
+                        <span class="inline-block bg-green-100 text-green-700 text-[10px] px-1 py-0.5 rounded" x-text="cell.binding?.plan_name"></span>
+                    </div>
+                    <!-- 消耗显示：仅已播完/正在播显示 -->
+                    <div x-show="cell.daySchedule && (cell.isPast || cell.isToday) && cell.daySchedule?.room_spend && Object.keys(cell.daySchedule.room_spend).length > 0" class="mt-0.5 border-t border-gray-200 pt-0.5">
+                        <template x-for="(spend, ri) in cell.daySchedule.room_spend" :key="ri">
+                            <div class="text-[10px] text-orange-600 flex justify-between">
+                                <span x-text="'直播间' + ri"></span>
+                                <span x-text="'¥' + spend.toFixed(0)"></span>
+                            </div>
+                        </template>
                     </div>
                 </div>
             </template>
@@ -35,6 +61,7 @@
     <div x-show="selectedDates.length > 0" class="bg-blue-50 p-3 rounded flex justify-between items-center">
         <span class="text-sm text-blue-700">已选择 <span x-text="selectedDates.length" class="font-bold"></span> 天</span>
         <div class="flex items-center gap-2">
+            <button @click="applyWeekdayDefaults()" class="text-sm bg-orange-500 text-white px-3 py-1 rounded hover:bg-orange-600">📅 应用周默认</button>
             <button @click="autoFillAnchors()" class="text-sm bg-green-600 text-white px-3 py-1 rounded hover:bg-green-700">一键排班</button>
             <button @click="clearSelection()" class="text-sm text-gray-500 hover:text-gray-700">清除选择</button>
         </div>
@@ -91,6 +118,16 @@
                     <button @click="swapRoomAccounts(1, 2)" class="text-xs text-orange-500 hover:text-orange-700 border border-orange-300 rounded px-2 py-1">互换直播间1和2账户</button>
                 </div>
             </div>
+            <!-- 招生团队 -->
+            <div class="space-y-2 mt-3 pt-3 border-t">
+                <label class="text-sm text-gray-600 font-medium">招生团队</label>
+                <select x-model="bindForm.recruit_team_id" class="form-input">
+                    <option value="">选择团队</option>
+                    <template x-for="t in recruitTeams" :key="t.id">
+                        <option :value="t.id" x-text="t.name"></option>
+                    </template>
+                </select>
+            </div>
             <div class="flex justify-end space-x-2">
                 <button @click="showBindModal=false" class="px-4 py-2 border rounded hover:bg-gray-50">取消</button>
                 <button @click="saveBinding()" class="btn-primary">确认绑定</button>
@@ -103,7 +140,7 @@ function calendarApp() {
     return {
         currentYear: new Date().getFullYear(), currentMonth: new Date().getMonth() + 1,
         weekDays: ['周一','周二','周三','周四','周五','周六','周日'],
-        plans: [], activePlans: [], anchors: [], bindings: [], adAccounts: [],
+        plans: [], activePlans: [], anchors: [], bindings: [], adAccounts: [], scheduleDays: [], recruitTeams: [],
         selectedDates: [], showBindModal: false,
         bindForm: { plan_id: '', anchor_mapping: {}, room_accounts: {} },
 
@@ -129,9 +166,12 @@ function calendarApp() {
             for(let d = 1; d <= daysInMonth; d++) {
                 const dateStr = `${this.currentYear}-${String(this.currentMonth).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
                 const binding = this.bindings.find(b => b.date === dateStr);
+                const daySchedule = this.scheduleDays.find(d => d.date === dateStr);
                 const today = new Date();
                 const isToday = this.currentYear === today.getFullYear() && this.currentMonth === today.getMonth() + 1 && d === today.getDate();
-                cells.push({day: d, current: true, key: dateStr, dateStr, binding, selected: this.selectedDates.includes(dateStr), isToday});
+                const cellDate = new Date(this.currentYear, this.currentMonth - 1, d);
+                const isPast = cellDate < new Date(today.getFullYear(), today.getMonth(), today.getDate());
+                cells.push({day: d, current: true, key: dateStr, dateStr, binding, daySchedule, selected: this.selectedDates.includes(dateStr), isToday, isPast});
             }
             const remaining = 42 - cells.length;
             for(let i = 1; i <= remaining; i++) {
@@ -144,14 +184,16 @@ function calendarApp() {
             if (this._dataLoading) return;
             this._dataLoading = true;
             try {
-                const [pRes, aRes, bRes, accRes] = await Promise.all([
+                const [pRes, aRes, bRes, dRes, accRes, tRes] = await Promise.all([
                 adminFetch('/admin/api/schedule/plans'), adminFetch('/admin/api/anchors'),
                 adminFetch(`/admin/api/schedule/bindings?year=${this.currentYear}&month=${this.currentMonth}`),
-                adminFetch('/admin/api/ad-accounts')
+                adminFetch(`/admin/api/schedule/days?year=${this.currentYear}&month=${this.currentMonth}`),
+                adminFetch('/admin/api/ad-accounts'),
+                adminFetch('/admin/api/recruit-teams')
             ]);
-            const [pJ, aJ, bJ, accJ] = await Promise.all([pRes.json(), aRes.json(), bRes.json(), accRes.json()]);
+            const [pJ, aJ, bJ, dJ, accJ, tJ] = await Promise.all([pRes.json(), aRes.json(), bRes.json(), dRes.json(), accRes.json(), tRes.json()]);
             this.plans = pJ.data || []; this.activePlans = this.plans.filter(p => p.is_active);
-                this.anchors = aJ.data || []; this.bindings = bJ.data || []; this.adAccounts = accJ.data || [];
+                this.anchors = aJ.data || []; this.bindings = bJ.data || []; this.scheduleDays = dJ.data || []; this.adAccounts = accJ.data || []; this.recruitTeams = (tJ.data || []).map(t => ({ id: t.id, name: t.name }));
             } finally { this._dataLoading = false; }
         },
 
@@ -169,7 +211,7 @@ function calendarApp() {
                 for (const key in this.bindForm.room_accounts) delete this.bindForm.room_accounts[key];
                 const existing = this.bindings.find(b => b.date === cell.dateStr);
                 if(existing) {
-                    this.bindForm.plan_id = existing.plan_id;
+                    this.bindForm.plan_id = existing.plan_id; this.bindForm.recruit_team_id = existing.recruit_team_id || "";
                     const srcMap = existing.anchor_mapping || {};
                     for (const [k, v] of Object.entries(srcMap)) this.bindForm.anchor_mapping[k] = v;
                 }
@@ -178,7 +220,7 @@ function calendarApp() {
                     const r = await adminFetch(`/admin/api/room-bindings?date=${cell.dateStr}`);
                     const j = await r.json();
                     (j.data || []).forEach(b => { this.bindForm.room_accounts[b.room_index] = b.ad_account_id; });
-                } catch(e) {}
+                } catch(e) { console.warn('加载房间绑定失败:', e); }
                 this.showBindModal = true;
             }
         },
@@ -207,9 +249,30 @@ function calendarApp() {
             if(!this.bindForm.plan_id || this.selectedDates.length === 0) return;
             const mapping = {};
             for(const [k, v] of Object.entries(this.bindForm.anchor_mapping)) { if(v) mapping[k] = v; }
-            // 保存排班绑定
+            // 保存排班绑定（兼容旧数据源）
             await adminFetch('/admin/api/schedule/bindings', {method:'POST',headers:{'Content-Type':'application/json'},
-                body:JSON.stringify({dates:this.selectedDates, plan_id:parseInt(this.bindForm.plan_id), anchor_mapping:mapping})});
+                body:JSON.stringify({dates:this.selectedDates, plan_id:parseInt(this.bindForm.plan_id), anchor_mapping:mapping, recruit_team_id:this.bindForm.recruit_team_id ? parseInt(this.bindForm.recruit_team_id) : null})});
+            // 同步到 ScheduleDay（统一事实源）
+            let syncErrors = [];
+            for(const date of this.selectedDates) {
+                try {
+                    const resp = await adminFetch('/admin/api/live-plans', {method:'POST',headers:{'Content-Type':'application/json'},
+                        body:JSON.stringify({
+                            date: date,
+                            plan_id: parseInt(this.bindForm.plan_id),
+                            status: 'confirmed',
+                            recruit_team_id: this.bindForm.recruit_team_id ? parseInt(this.bindForm.recruit_team_id) : null,
+                            source: 'calendar'
+                        })});
+                    const j = await resp.json();
+                    if (j.code !== 0 && j.code !== 400) syncErrors.push(date + ': ' + (j.message || '失败'));
+                } catch(e) {
+                    syncErrors.push(date + ': ' + e.message);
+                }
+            }
+            if (syncErrors.length > 0) {
+                alert('部分日期同步失败:\n' + syncErrors.join('\n'));
+            }
             // 保存直播间账户绑定（每个日期单独保存）
             for(const date of this.selectedDates) {
                 const roomBindings = Object.entries(this.bindForm.room_accounts)
@@ -235,7 +298,7 @@ function calendarApp() {
                 const r = await adminFetch(`/admin/api/room-bindings?date=${date}`);
                 const j = await r.json();
                 (j.data || []).forEach(b => { this.bindForm.room_accounts[b.room_index] = b.ad_account_id; });
-            } catch(e) {}
+            } catch(e) { console.warn('加载房间绑定失败:', e); }
         },
 
         clearSelection() { this.selectedDates = []; },

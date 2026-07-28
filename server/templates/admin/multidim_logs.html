@@ -1,0 +1,222 @@
+{% extends "admin/base.html" %}
+{% block title %}导入记录{% endblock %}
+{% block admin_content %}
+<div x-data="multidimLogsApp()" x-init="loadBatches()" class="space-y-4">
+    <div class="flex items-center justify-between bg-white p-4 rounded-lg shadow-sm">
+        <h3 class="font-bold text-lg">📋 导入记录</h3>
+        <div class="flex gap-2">
+            <select x-model="filters.status" @change="loadBatches()" class="form-input text-sm py-1 px-2">
+                <option value="">全部状态</option>
+                <option value="success">成功</option>
+                <option value="partial">部分成功</option>
+                <option value="error">失败</option>
+            </select>
+        </div>
+    </div>
+
+    <div class="bg-white rounded-lg shadow-sm overflow-x-auto">
+        <table class="data-table">
+            <thead><tr>
+                <th>文件名</th>
+                <th>格式</th>
+                <th>操作管理员</th>
+                <th>总行数</th>
+                <th>新增</th>
+                <th>跳过</th>
+                <th>状态</th>
+                <th>导入时间</th>
+                <th>操作</th>
+            </tr></thead>
+            <tbody>
+                <template x-for="b in batches" :key="b.id">
+                    <tr>
+                        <td class="text-sm" x-text="b.filename"></td>
+                        <td><span class="text-xs bg-gray-100 px-2 py-0.5 rounded" x-text="b.file_format"></span></td>
+                        <td x-text="b.admin_name || '-'"></td>
+                        <td x-text="b.total_rows"></td>
+                        <td class="text-green-600 font-medium" x-text="b.inserted_count"></td>
+                        <td>
+                            <span x-show="b.skipped_count > 0" class="text-orange-600 font-medium" x-text="b.skipped_count"></span>
+                            <span x-show="!b.skipped_count" class="text-gray-400">0</span>
+                        </td>
+                        <td>
+                            <span x-show="b.status==='success'" class="text-green-600">成功</span>
+                            <span x-show="b.status==='partial'" class="text-orange-600">部分</span>
+                            <span x-show="b.status==='error'" class="text-red-600">失败</span>
+                        </td>
+                        <td class="text-sm text-gray-500" x-text="b.imported_at"></td>
+                        <td class="flex gap-1">
+                            <button @click="showDetail(b)" class="btn-primary text-xs py-1 px-2">查看详情</button>
+                            <button @click="showSkips(b.id, b.filename)" :disabled="b.skipped_count === 0" class="btn-secondary text-xs py-1 px-2 disabled:opacity-50 disabled:cursor-not-allowed">
+                                查看跳过
+                            </button>
+                        </td>
+                    </tr>
+                </template>
+                <tr x-show="total === 0">
+                    <td colspan="9" class="text-center text-gray-400 py-8">暂无导入记录</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+
+    <!-- 分页 -->
+    <div x-show="total > pageSize" class="flex justify-between items-center">
+        <button @click="page--;loadBatches()" :disabled="page<=1" class="px-3 py-1 border rounded disabled:opacity-50">上一页</button>
+        <span class="text-sm">第 <span x-text="page"></span> 页 / 共 <span x-text="Math.ceil(total/pageSize)"></span> 页</span>
+        <button @click="page++;loadBatches()" :disabled="page*pageSize>=total" class="px-3 py-1 border rounded disabled:opacity-50">下一页</button>
+    </div>
+
+    <!-- 详情弹窗 -->
+    <div x-show="detailModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" @click.self="detailModal=false">
+        <div class="bg-white p-6 rounded-lg shadow-xl w-[700px] max-h-[80vh] space-y-4 overflow-y-auto">
+            <h3 class="font-bold text-lg">📋 导入详情</h3>
+            <div class="text-sm space-y-2">
+                <div class="grid grid-cols-2 gap-2">
+                    <div><span class="text-gray-500">文件名：</span><span class="font-medium" x-text="detailItem?.filename"></span></div>
+                    <div><span class="text-gray-500">导入时间：</span><span x-text="detailItem?.imported_at"></span></div>
+                    <div><span class="text-gray-500">管理员：</span><span x-text="detailItem?.admin_name || '-'"></span></div>
+                    <div>
+                        <span class="text-gray-500">状态：</span>
+                        <span :class="detailItem?.status === 'success' ? 'text-green-600' : 'text-red-600'" x-text="detailItem?.status === 'success' ? '成功' : (detailItem?.status === 'error' ? '失败' : '部分成功')"></span>
+                    </div>
+                </div>
+                <div class="border-t pt-2 mt-2">
+                    <p class="font-medium mb-2">统计</p>
+                    <div class="grid grid-cols-4 gap-2 text-center">
+                        <div class="bg-gray-50 p-2 rounded"><div class="text-lg font-bold" x-text="detailItem?.total_rows || 0"></div><div class="text-xs text-gray-500">总行数</div></div>
+                        <div class="bg-green-50 p-2 rounded"><div class="text-lg font-bold text-green-600" x-text="detailItem?.inserted_count || 0"></div><div class="text-xs text-gray-500">新增</div></div>
+                        <div class="bg-orange-50 p-2 rounded"><div class="text-lg font-bold text-orange-600" x-text="detailItem?.skipped_count || 0"></div><div class="text-xs text-gray-500">跳过</div></div>
+                        <div class="bg-red-50 p-2 rounded"><div class="text-lg font-bold text-red-600" x-text="detailItem?.error_count || 0"></div><div class="text-xs text-gray-500">错误</div></div>
+                    </div>
+                </div>
+                <div x-show="detailItem?.by_type && Object.keys(detailItem.by_type).length > 0" class="border-t pt-2">
+                    <p class="font-medium mb-2">各Sheet类型统计</p>
+                    <div class="space-y-1">
+                        <template x-for="(count, type) in detailItem.by_type" :key="type">
+                            <div class="flex justify-between text-sm py-0.5">
+                                <span x-text="typeLabel(type)"></span>
+                                <span class="font-medium" x-text="count + '条'"></span>
+                            </div>
+                        </template>
+                    </div>
+                </div>
+                <div x-show="detailItem?.error_message" class="border-t pt-2">
+                    <p class="font-medium text-red-600 mb-1">错误信息</p>
+                    <p class="text-sm bg-red-50 p-2 rounded" x-text="detailItem.error_message"></p>
+                </div>
+            </div>
+            <div class="flex justify-end gap-2">
+                <button @click="detailModal=false" class="bg-gray-200 px-4 py-2 rounded hover:bg-gray-300">关闭</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 跳过记录弹窗 -->
+    <div x-show="skipModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" x-cloak @click.self="skipModal=false">
+        <div class="bg-white p-6 rounded-lg shadow-xl w-[800px] max-h-[80vh] space-y-4 overflow-y-auto">
+            <h3 class="font-bold text-lg">⏭️ 跳过记录</h3>
+            <p class="text-sm text-gray-500" x-text="`导入: ${skipFilename}`"></p>
+
+            <template x-if="skipItems.length === 0">
+                <p class="text-center text-gray-400 py-4">暂无跳过记录</p>
+            </template>
+
+            <template x-if="skipItems.length > 0">
+                <table class="min-w-full text-xs">
+                    <thead><tr class="bg-gray-50">
+                        <th class="px-2 py-1">行号</th>
+                        <th class="px-2 py-1">Sheet类型</th>
+                        <th class="px-2 py-1">Sheet名</th>
+                        <th class="px-2 py-1">联系方式</th>
+                        <th class="px-2 py-1">微信</th>
+                        <th class="px-2 py-1">原因</th>
+                        <th class="px-2 py-1">说明</th>
+                    </tr></thead>
+                    <tbody>
+                        <template x-for="s in skipItems" :key="s.id">
+                            <tr class="border-t">
+                                <td class="px-2 py-1" x-text="s.row_index || '-'"></td>
+                                <td class="px-2 py-1">
+                                    <span x-show="s.sheet_type==='education'" class="text-green-600">教育在线</span>
+                                    <span x-show="s.sheet_type==='douyin_ops'" class="text-blue-600">抖音代运营</span>
+                                    <span x-show="s.sheet_type==='moment_ad'" class="text-purple-600">朋友圈广告</span>
+                                    <span x-show="s.sheet_type==='live_lead'" class="text-teal-600">直播数据</span>
+                                </td>
+                                <td class="px-2 py-1" x-text="s.sheet_name"></td>
+                                <td class="px-2 py-1 font-mono" x-text="s.contact_norm || '-'"></td>
+                                <td class="px-2 py-1" x-text="s.wechat || '-'"></td>
+                                <td class="px-2 py-1">
+                                    <span x-show="s.reason==='duplicate'" class="font-bold text-red-600">重复（已存在）</span>
+                                    <span x-show="s.reason==='missing_contact'" class="text-yellow-600">缺联系方式</span>
+                                    <span x-show="s.reason==='invalid_contact'" class="text-yellow-600">无效联系方式</span>
+                                    <span x-show="s.reason==='template_empty'" class="text-gray-500">预留数据</span>
+                                    <span x-show="s.reason==='parse_error'" class="text-red-600">解析错误</span>
+                                </td>
+                                <td class="px-2 py-1 text-gray-500" x-text="s.detail"></td>
+                            </tr>
+                        </template>
+                    </tbody>
+                </table>
+            </template>
+
+            <div class="flex justify-end">
+                <button @click="skipModal=false" class="bg-gray-200 px-4 py-2 rounded hover:bg-gray-300">关闭</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+function multidimLogsApp() {
+    return {
+        batches: [],
+        total: 0,
+        page: 1,
+        pageSize: 20,
+        filters: { status: '' },
+        skipModal: false,
+        skipItems: [],
+        skipFilename: '',
+        detailModal: false,
+        detailItem: null,
+
+        async loadBatches() {
+            const params = new URLSearchParams({page: this.page, size: this.pageSize});
+            if (this.filters.status) params.set('status', this.filters.status);
+            const resp = await adminFetch(`/admin/api/multidim/batches?${params}`);
+            const json = await resp.json();
+            if (json.code === 0) {
+                this.batches = json.data?.items || [];
+                this.total = json.data?.total || 0;
+            }
+        },
+
+        showDetail(b) {
+            this.detailItem = b;
+            // 解析 by_type_json
+            if (b.by_type && typeof b.by_type === 'string') {
+                try { this.detailItem.by_type = JSON.parse(b.by_type); } catch { this.detailItem.by_type = {}; }
+            }
+            this.detailModal = true;
+        },
+
+        async showSkips(batchId, filename) {
+            this.skipFilename = filename;
+            this.skipItems = [];
+            this.skipModal = true;
+            const resp = await adminFetch(`/admin/api/multidim/batches/${batchId}/skips?page=1&size=200`);
+            const json = await resp.json();
+            if (json.code === 0) {
+                this.skipItems = json.data?.items || [];
+            }
+        },
+
+        typeLabel(type) {
+            const labels = {education: '教育在线', douyin_ops: '抖音代运营', moment_ad: '朋友圈广告', live_lead: '直播数据分配', schedule: '直播排班', operational: '运营值班', unknown: '未识别'};
+            return labels[type] || type;
+        },
+    };
+}
+</script>
+{% endblock %}

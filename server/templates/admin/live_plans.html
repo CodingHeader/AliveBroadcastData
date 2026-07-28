@@ -1,0 +1,251 @@
+{% extends "admin/base.html" %}
+{% block title %}直播计划{% endblock %}
+{% block admin_content %}
+<div x-data="livePlanApp()" x-init="init()" class="space-y-4">
+    <div class="bg-white p-4 rounded-lg shadow-sm">
+        <h3 class="font-bold text-lg mb-3">📋 直播计划</h3>
+        <div class="flex items-center gap-3 flex-wrap">
+            <input type="date" x-model="dateFrom" class="border rounded-lg px-3 py-2 text-sm">
+            <span class="text-gray-400">~</span>
+            <input type="date" x-model="dateTo" class="border rounded-lg px-3 py-2 text-sm">
+            <select x-model="filterPlanId" class="border rounded-lg px-3 py-2 text-sm">
+                <option value="">全部方案</option>
+                <template x-for="p in plans" :key="p.id">
+                    <option :value="p.id" x-text="p.name"></option>
+                </template>
+            </select>
+            <button @click="loadPlans()" class="btn-primary text-sm py-2 px-4">查询</button>
+            <button @click="openCreateModal()" class="btn-success text-sm py-2 px-4">+ 新建计划</button>
+        </div>
+    </div>
+
+    <div class="bg-white rounded-lg shadow-sm overflow-hidden">
+        <table class="min-w-full text-sm">
+            <thead class="bg-gray-50">
+                <tr>
+                    <th class="px-4 py-3 text-left">日期</th>
+                    <th class="px-4 py-3 text-left">排班方案</th>
+                    <th class="px-4 py-3 text-center">时间</th>
+                    <th class="px-4 py-3 text-center">主播</th>
+                    <th class="px-4 py-3 text-center">运营</th>
+                    <th class="px-4 py-3 text-center">状态</th>
+                    <th class="px-4 py-3 text-center">团队</th>
+                    <th class="px-4 py-3 text-center">来源</th>
+                    <th class="px-4 py-3 text-right">操作</th>
+                </tr>
+            </thead>
+            <tbody>
+                <template x-for="item in items" :key="item.id">
+                    <tr class="border-t hover:bg-gray-50">
+                        <td class="px-4 py-3 font-medium" x-text="item.date"></td>
+                        <td class="px-4 py-3" x-text="item.plan_name || '未配置'"></td>
+                        <td class="px-4 py-3 text-center text-xs" x-text="item.plan_start ? (item.plan_start + '~' + item.plan_end) : '-'"></td>
+                        <td class="px-4 py-3 text-center" x-text="item.anchor_count + '人'"></td>
+                        <td class="px-4 py-3 text-center" x-text="item.operator_count + '人'"></td>
+                        <td class="px-4 py-3 text-center"><span class="text-xs px-2 py-0.5 rounded" :class="statusClass(item.status)" x-text="statusLabel(item.status)"></span></td>
+                        <td class="px-4 py-3 text-center text-xs" x-text="item.recruit_team_name || '-'"></td>
+                        <td class="px-4 py-3 text-center"><span class="text-xs px-2 py-0.5 rounded" :class="item.source === 'manual' ? 'bg-blue-100 text-blue-800' : 'bg-gray-100 text-gray-600'" x-text="item.source === 'manual' ? '手动' : '导入'"></span></td>
+                        <td class="px-4 py-3 text-right">
+                            <button @click="editPlan(item)" class="text-blue-600 hover:text-blue-800 text-xs mr-2">编辑</button>
+                            <button @click="deletePlan(item)" class="text-red-600 hover:text-red-800 text-xs">删除</button>
+                        </td>
+                    </tr>
+                </template>
+                <tr x-show="items.length === 0">
+                    <td colspan="9" class="px-4 py-8 text-center text-gray-400">暂无直播计划数据</td>
+                </tr>
+            </tbody>
+        </table>
+        <div x-show="total > size" class="px-4 py-3 border-t flex items-center justify-between text-sm">
+            <span class="text-gray-500" x-text="'共 ' + total + ' 条'"></span>
+            <div class="flex gap-2">
+                <button @click="prevPage()" :disabled="page <= 1" class="px-3 py-1 border rounded disabled:opacity-50">上一页</button>
+                <span class="px-3 py-1" x-text="page + '/' + maxPage"></span>
+                <button @click="nextPage()" :disabled="page >= maxPage" class="px-3 py-1 border rounded disabled:opacity-50">下一页</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 新建/编辑弹窗 -->
+    <div x-show="showModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" @click.self="showModal = false">
+        <div class="bg-white rounded-xl p-6 w-[700px] shadow-2xl max-h-[85vh] overflow-y-auto">
+            <h3 class="text-lg font-bold mb-4" x-text="editingId ? '编辑直播计划' : '新建直播计划'"></h3>
+            <div class="space-y-3">
+                <div class="grid grid-cols-3 gap-3">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">日期</label>
+                        <input type="date" x-model="form.date" class="w-full border rounded-lg px-3 py-2">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">排班方案</label>
+                        <select x-model="form.plan_id" class="w-full border rounded-lg px-3 py-2">
+                            <option value="">请选择</option>
+                            <template x-for="p in plans" :key="p.id">
+                                <option :value="p.id" x-text="p.name + ' (' + p.anchor_count + '主播' + (p.operator_count||1) + '运营)'"></option>
+                            </template>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">状态</label>
+                        <select x-model="form.status" class="w-full border rounded-lg px-3 py-2">
+                            <option value="draft">草稿</option>
+                            <option value="confirmed">已确认</option>
+                            <option value="completed">已完成</option>
+                            <option value="cancelled">已取消</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">招生团队</label>
+                        <select x-model="form.recruit_team_id" class="w-full border rounded-lg px-3 py-2">
+                            <option value="">无</option>
+                            <template x-for="t in recruitTeams" :key="t.id">
+                                <option :value="t.id" x-text="t.name"></option>
+                            </template>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">备注</label>
+                        <input type="text" x-model="form.notes" class="w-full border rounded-lg px-3 py-2" placeholder="可选">
+                    </div>
+                </div>
+            </div>
+            <div class="flex justify-end gap-2 mt-4">
+                <button @click="showModal = false" class="px-4 py-2 border rounded-lg hover:bg-gray-50">取消</button>
+                <button @click="savePlan()" :disabled="saving" class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50">
+                    <span x-text="saving ? '保存中...' : '保存'"></span>
+                </button>
+            </div>
+            <div x-show="saveError" class="mt-3 bg-red-50 p-3 rounded text-sm text-red-700" x-text="saveError"></div>
+        </div>
+    </div>
+</div>
+
+<script>
+function livePlanApp() {
+    return {
+        dateFrom: '', dateTo: '', filterPlanId: '',
+        plans: [], items: [], recruitTeams: [],
+        total: 0, page: 1, size: 31, maxPage: 1,
+        showModal: false, editingId: null, saving: false, saveError: '',
+        form: { date: '', plan_id: '', status: 'draft', recruit_team_id: '', notes: '' },
+
+        init() { this.loadPlans(); },
+
+        async loadPlans() {
+            let url = '/admin/api/live-plans?page=' + this.page + '&size=' + this.size;
+            if (this.dateFrom) url += '&date_from=' + this.dateFrom;
+            if (this.dateTo) url += '&date_to=' + this.dateTo;
+            if (this.filterPlanId) url += '&plan_id=' + this.filterPlanId;
+            try {
+                const [pResp, tResp] = await Promise.all([
+                    adminFetch('/admin/api/schedule/plans'),
+                    adminFetch('/admin/api/recruit-teams')
+                ]);
+                const pj = await pResp.json();
+                const tj = await tResp.json();
+                this.plans = pj.data || [];
+                this.recruitTeams = tj.data || [];
+                const r = await adminFetch(url);
+                const j = await r.json();
+                if (j.code === 0) {
+                    this.items = j.data.items || [];
+                    this.total = j.data.total || 0;
+                    this.maxPage = Math.max(1, Math.ceil(this.total / this.size));
+                }
+            } catch(e) { console.error('加载失败', e); }
+        },
+
+        prevPage() { if (this.page > 1) { this.page--; this.loadPlans(); } },
+        nextPage() { if (this.page < this.maxPage) { this.page++; this.loadPlans(); } },
+
+        openCreateModal() {
+            this.editingId = null;
+            this.form = { date: '', plan_id: '', status: 'draft', recruit_team_id: '', notes: '' };
+            this.saveError = '';
+            this.showModal = true;
+        },
+
+        async editPlan(item) {
+            this.editingId = item.id;
+            this.form = {
+                date: item.date, plan_id: item.plan_id || '',
+                status: item.status || 'draft', recruit_team_id: item.recruit_team_id || '',
+                notes: item.notes || ''
+            };
+            this.saveError = '';
+            this.showModal = true;
+            try {
+                const r = await adminFetch('/admin/api/live-plans/' + item.id);
+                const j = await r.json();
+                if (j.code === 0 && j.data) {
+                    this.form.status = j.data.status || 'draft';
+                    this.form.recruit_team_id = j.data.recruit_team_id || '';
+                }
+            } catch(e) { console.error('加载详情失败', e); }
+        },
+
+        async savePlan() {
+            if (!this.form.date) { this.saveError = '请选择日期'; return; }
+            if (!this.form.plan_id) { this.saveError = '请选择排班方案'; return; }
+            this.saving = true;
+            this.saveError = '';
+            try {
+                const body = {
+                    date: this.form.date,
+                    plan_id: parseInt(this.form.plan_id),
+                    status: this.form.status || 'draft',
+                    notes: this.form.notes || ''
+                };
+                if (this.form.recruit_team_id) {
+                    body.recruit_team_id = parseInt(this.form.recruit_team_id);
+                }
+                let resp;
+                if (this.editingId) {
+                    resp = await adminFetch('/admin/api/live-plans/' + this.editingId, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(body)
+                    });
+                } else {
+                    resp = await adminFetch('/admin/api/live-plans', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(body)
+                    });
+                }
+                const j = await resp.json();
+                if (j.code === 0) {
+                    this.showModal = false;
+                    this.loadPlans();
+                } else {
+                    this.saveError = j.message || '保存失败';
+                }
+            } catch(e) { this.saveError = '保存失败: ' + e.message; }
+            finally { this.saving = false; }
+        },
+
+        async deletePlan(item) {
+            if (!confirm('确定删除 ' + item.date + ' 的直播计划？')) return;
+            try {
+                const r = await adminFetch('/admin/api/live-plans/' + item.id, { method: 'DELETE' });
+                const j = await r.json();
+                if (j.code === 0) { this.loadPlans(); }
+                else { alert(j.message || '删除失败'); }
+            } catch(e) { alert('删除失败: ' + e.message); }
+        },
+
+        statusClass(status) {
+            const map = { draft: 'bg-gray-100 text-gray-700', confirmed: 'bg-green-100 text-green-800', completed: 'bg-blue-100 text-blue-800', cancelled: 'bg-red-100 text-red-800' };
+            return map[status] || 'bg-gray-100';
+        },
+
+        statusLabel(status) {
+            const map = { draft: '草稿', confirmed: '已确认', completed: '已完成', cancelled: '已取消' };
+            return map[status] || status;
+        }
+    };
+}
+</script>
+{% endblock %}

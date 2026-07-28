@@ -3,19 +3,20 @@ from sqlalchemy.orm import Session as DBSession
 from sqlalchemy import func
 from fastapi.responses import FileResponse, StreamingResponse
 from database import get_db
-from models import Setting, Deal, Lead, Anchor, SessionAnchor, Session, SchedulePlan, ScheduleSlot, ScheduleBinding, BindingSlot, AdAccount, RoomAccountBinding, DashboardTab, ClueConfig, TabAnalysis, RecruitTeam, RecruitEmployee, ClueAssignment, ApiClue, AdPlan, AdPlanSpend, Comment, PrivateMessage
+from models import Setting, Deal, Lead, Anchor, SessionAnchor, Session, SchedulePlan, ScheduleSlot, ScheduleBinding, BindingSlot, AdAccount, RoomAccountBinding, DashboardTab, ClueConfig, TabAnalysis, RecruitTeam, RecruitEmployee, ClueAssignment, ApiClue, AdPlan, AdPlanSpend, Comment, PrivateMessage, MultiDimRecord, MultiDimImportBatch, MultiDimImportSkip
 from auth import verify_password, create_token, get_current_admin, hash_password
 from pydantic import BaseModel, field_validator
-from typing import Optional
+from typing import Optional, Union
 from datetime import datetime
 import shutil
 from pathlib import Path
-import json, os, io, time
+import json, os, io, time, logging
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 class LoginRequest(BaseModel): username: str; password: str
-class DealCreate(BaseModel): session_id: Optional[int]=None; lead_id: Optional[int]=None; customer_name: str; amount: float; deal_time: str; employee: Optional[str]=None; team_id: Optional[int]=None; employee_id: Optional[int]=None; notes: Optional[str]=None
+class DealCreate(BaseModel): session_id: Optional[int] = None; lead_id: Optional[Union[int, str]] = None; customer_name: str; amount: float; deal_time: str; employee: Optional[str] = None; team_id: Optional[int] = None; employee_id: Optional[int] = None; notes: Optional[str] = None
 class ManualClueCreate(BaseModel):
     """手动添加私信线索请求模型"""
     name: Optional[str] = None
@@ -73,41 +74,103 @@ def list_deals(page: int = 1, size: int = 20, admin=Depends(get_current_admin), 
     total = query.count(); items = query.offset((page-1)*size).limit(size).all()
     return {"code":0, "data":{"items":[{"id":d.id,"customer_name":d.customer_name,"amount":d.amount,"deal_time":d.deal_time,"employee":d.employee,"lead_nickname":d.lead.nickname if d.lead else None,"lead_id":d.lead_id,"session_id":d.session_id,"team_id":d.team_id,"team_name":d.team.name if d.team else None,"employee_id":d.employee_id,"employee_name":d.deal_employee.name if d.deal_employee else None} for d in items], "total":total}}
 
+def _parse_lead_id(raw):
+    if raw is None:
+        return None, None
+    text = str(raw)
+    if text.startswith("lead_") and text[5:].isdigit():
+        return int(text[5:]), "leads"
+    if text.startswith("api_") and text[4:].isdigit():
+        return int(text[4:]), "api_clues"
+    if text.isdigit():
+        return int(text), "leads"
+    return None, None
+
+
+def _get_lead(db, raw_lead_id):
+    lead_id_int, origin = _parse_lead_id(raw_lead_id)
+    if lead_id_int is None:
+        if isinstance(raw_lead_id, str) and not raw_lead_id.isdigit():
+            lead = db.query(Lead).filter(Lead.lead_id == raw_lead_id).first()
+            if lead:
+                return lead
+        return None
+    if origin == "api_clues":
+        api_clue = db.query(ApiClue).get(lead_id_int)
+        if not api_clue:
+            return None
+        lead = db.query(Lead).filter(Lead.lead_id == api_clue.clue_id).first()
+        if lead:
+            return lead
+        lead = Lead(
+            session_id=api_clue.session_id,
+            lead_time=api_clue.create_time_detail or api_clue.modify_time,
+            nickname=api_clue.name or api_clue.author_nickname or "(未知昵称)",
+            lead_id=api_clue.clue_id,
+            phone_masked=api_clue.phone_masked,
+            city=api_clue.city_name or api_clue.auto_city_name,
+            path=api_clue.flow_entrance,
+            tags=api_clue.clue_type,
+            is_valid=None,
+            is_deal=False,
+            source="api",
+            ad_account=api_clue.advertiser_name or api_clue.ad_type,
+        )
+        db.add(lead)
+        db.flush()
+        return lead
+    return db.query(Lead).get(lead_id_int)
+
+
 @router.post("/deals")
 def create_deal(data: DealCreate, admin=Depends(get_current_admin), db=Depends(get_db)):
-    if data.lead_id:
-        lead = db.query(Lead).get(data.lead_id)
-        if lead and lead.is_deal:
-            return {"code": 400, "message": "该线索已标记成单"}
-    deal = Deal(session_id=data.session_id, lead_id=data.lead_id, customer_name=data.customer_name,
+    lead = _get_lead(db, data.lead_id)
+    if lead and lead.is_deal:
+        return {"code": 400, "message": "该线索已标记成单，请勿重复操作"}
+    deal = Deal(session_id=data.session_id, lead_id=(lead.id if lead else data.lead_id), customer_name=data.customer_name,
                 amount=data.amount, deal_time=data.deal_time, employee=data.employee,
                 team_id=data.team_id, employee_id=data.employee_id, notes=data.notes)
     db.add(deal)
-    if data.lead_id:
-        lead = db.query(Lead).get(data.lead_id)
-        if lead: lead.is_deal = True
+    if lead:
+        lead.is_deal = True
     db.commit(); return {"code":0, "deal_id": deal.id}
 
+
 @router.delete("/deals/{id}")
-def delete_deal(id: int, admin=Depends(get_current_admin), db=Depends(get_db)):
-    deal = db.query(Deal).get(id)
+def delete_deal(id: Union[int, str], admin=Depends(get_current_admin), db=Depends(get_db)):
+    deal_id_int, _ = _parse_lead_id(id)
+    deal = db.query(Deal).get(deal_id_int) if deal_id_int is not None else None
+    if not deal:
+        lead = _get_lead(db, id)
+        if lead:
+            deal = db.query(Deal).filter(Deal.lead_id == lead.id).first()
     if not deal: raise HTTPException(404)
-    if deal.lead_id:
-        other = db.query(Deal).filter(Deal.lead_id == deal.lead_id, Deal.id != id).count()
+    if deal and deal.lead_id:
+        other = db.query(Deal).filter(Deal.lead_id == deal.lead_id, Deal.id != deal.id).count()
         if other == 0:
-            lead = db.query(Lead).get(deal.lead_id)
+            lead = _get_lead(db, deal.lead_id)
             if lead: lead.is_deal = False
     db.delete(deal); db.commit(); return {"code":0}
 
 @router.delete("/deals/by-lead/{lead_id}")
-def delete_deal_by_lead(lead_id: int, admin=Depends(get_current_admin), db=Depends(get_db)):
-    """按 lead_id 取消成单"""
-    deal = db.query(Deal).filter(Deal.lead_id == lead_id).first()
-    if not deal: return {"code": 404, "message": "未找到成单记录"}
-    if deal.lead_id:
-        lead = db.query(Lead).get(deal.lead_id)
-        if lead: lead.is_deal = False
+def delete_deal_by_lead(lead_id: Union[int, str], admin=Depends(get_current_admin), db=Depends(get_db)):
+    """按 lead_id 取消成单（兼容 lead/api/manual 等字符串线索ID）"""
+    lead = _get_lead(db, lead_id)
+    if not lead:
+        return {"code": 404, "message": "线索不存在，无法取消成单"}
+    candidate_ids = {lead.id, f"lead_{lead.id}"}
+    if getattr(lead, "lead_id", None):
+        candidate_ids.add(lead.lead_id)
+    deal = db.query(Deal).filter(Deal.lead_id.in_(list(candidate_ids))).first()
+    if not deal: return {"code": 404, "message": "未找到该线索的成单记录"}
+    if deal.lead_id not in candidate_ids:
+        linked = _get_lead(db, deal.lead_id)
+    else:
+        linked = lead
+    if linked:
+        linked.is_deal = False
     db.delete(deal); db.commit(); return {"code":0}
+
 
 @router.get("/anchors")
 def list_anchors(admin=Depends(get_current_admin), db=Depends(get_db)):
@@ -570,8 +633,17 @@ def batch_update_leads(data: LeadBatchUpdate, admin=Depends(get_current_admin), 
     return {"code": 0, "message": f"已更新 {len(leads)} 条线索"}
 
 @router.get("/leads")
-def list_leads(session_id: int = None, keyword: str = None, city: str = None, is_valid: str = None, source: str = None, page: int = 1, size: int = 20, admin=Depends(get_current_admin), db=Depends(get_db)):
-    """线索列表：合并油猴线索(leads表) + API线索(api_clues表)"""
+def list_leads(session_id: int = None, keyword: str = None, city: str = None, is_valid: str = None,
+               source: str = None, traffic: str = None,
+               date_from: str = None, date_to: str = None,
+               sort_by: str = None, sort_order: str = None,
+               page: int = 1, size: int = 20,
+               admin=Depends(get_current_admin), db=Depends(get_db)):
+    """线索列表：合并油猴线索(leads表) + API线索(api_clues表)，统一为单一线索DTO
+    支持排序：sort_by=lead_time/nickname/city/created_at, sort_order=asc/desc
+    支持日期筛选：date_from/date_to (YYYY-MM-DD)
+    支持来源/流量筛选：source=api/tm/manual/excel, traffic=marketing/natural/short_video
+    """
     from models import ApiClue
     from sqlalchemy import or_
 
@@ -580,83 +652,185 @@ def list_leads(session_id: int = None, keyword: str = None, city: str = None, is
 
     if session_id:
         lead_query = lead_query.filter(Lead.session_id == session_id)
-        # API线索按匹配的session_id过滤
         api_query = api_query.filter(ApiClue.session_id == session_id)
     if keyword:
         lead_query = lead_query.filter(Lead.nickname.contains(keyword))
         api_query = api_query.filter(or_(ApiClue.name.contains(keyword), ApiClue.author_nickname.contains(keyword)))
     if city:
         lead_query = lead_query.filter(Lead.city == city)
+        api_query = api_query.filter(
+            or_(
+                ApiClue.city_name == city,
+                ApiClue.auto_city_name == city,
+            )
+        )
     if is_valid:
         if is_valid == "true":
             lead_query = lead_query.filter(Lead.is_valid == True)
+            api_query = api_query.filter(
+                or_(
+                    ApiClue.effective_state == "1",
+                    ApiClue.convert_status.in_(["1", "5"]),
+                )
+            )
         elif is_valid == "false":
             lead_query = lead_query.filter(Lead.is_valid == False)
+            api_query = api_query.filter(
+                or_(
+                    ApiClue.effective_state == "0",
+                    ApiClue.effective_state == None,
+                    ApiClue.convert_status == None,
+                )
+            )
 
-    # 来源过滤
+    # 日期范围筛选
+    if date_from:
+        lead_query = lead_query.filter(Lead.lead_time >= date_from)
+        api_query = api_query.filter(ApiClue.create_time_detail >= date_from)
+    if date_to:
+        date_to_end = date_to + ' 23:59:59'
+        lead_query = lead_query.filter(Lead.lead_time <= date_to_end)
+        api_query = api_query.filter(ApiClue.create_time_detail <= date_to_end)
+
+    # 流量筛选
+    if traffic:
+        if traffic == 'marketing':
+            lead_query = lead_query.filter(Lead.source == 'marketing')
+            api_query = api_query.filter(ApiClue.flow_type == 'marketing')
+        elif traffic == 'natural':
+            lead_query = lead_query.filter(Lead.source == 'natural')
+            api_query = api_query.filter(ApiClue.flow_type == 'natural')
+        elif traffic == 'short_video':
+            lead_query = lead_query.filter(Lead.source == 'short_video')
+            api_query = api_query.filter(ApiClue.flow_type == 'short_video')
+        elif traffic == 'live':
+            api_query = api_query.filter(ApiClue.flow_type == 'live')
+
+    # 来源筛选（仅保留来源类型，不包含流量）
+    # 显式决定查询哪些数据源，避免隐式门控导致死代码
     query_api_only = (source == 'api')
-    if source:
-        lead_query = lead_query.filter(Lead.source == source)
+    query_leads_only = False
+    if source and not query_api_only:
+        if source == 'excel':
+            lead_query = lead_query.filter(Lead.source == 'excel')
+            api_query = api_query.filter(ApiClue.clue_source.like('multidim%'))
+        elif source == 'manual':
+            lead_query = lead_query.filter(Lead.source == 'manual')
+            api_query = api_query.filter(ApiClue.clue_source == 'manual')
+        elif source == 'tm':
+            lead_query = lead_query.filter(Lead.source == 'tm')
+            api_query = api_query.filter(ApiClue.clue_source == 'tm')
+        elif source == 'api':
+            api_query = api_query.filter(ApiClue.clue_source == 'api')
+            query_leads_only = True  # Lead 表无 api 来源，仅查 ApiClue
+        elif source in ('marketing', 'natural', 'short_video'):
+            # 流量语义的来源，仅 Lead 表有这些值
+            query_leads_only = True
 
-    # 统计总数
+    # 动态排序
+    SORT_WHITELIST = {'lead_time', 'nickname', 'city', 'created_at'}
+    if sort_by in SORT_WHITELIST:
+        order_col = getattr(Lead, sort_by, None)
+        if order_col:
+            order_fn = order_col.asc if sort_order == 'asc' else order_col.desc
+            lead_query = lead_query.order_by(order_fn())
+        api_order_col = getattr(ApiClue, sort_by, None)
+        if api_order_col:
+            api_order_fn = api_order_col.asc if sort_order == 'asc' else api_order_col.desc
+            api_query = api_query.order_by(api_order_fn())
+    else:
+        lead_query = lead_query.order_by(Lead.created_at.desc())
+        api_query = api_query.order_by(ApiClue.created_at.desc())
+
+    # 统一投影并修正分页
+    def _lead_dto(l: Lead):
+        return {
+            "id": f"lead_{l.id}",
+            "origin": "leads",
+            "session_id": l.session_id,
+            "lead_time": l.lead_time,
+            "nickname": l.nickname,
+            "city": l.city,
+            "path": l.path,
+            "tags": l.tags,
+            "is_valid": l.is_valid,
+            "is_deal": l.is_deal,
+            "source": l.source or "tm",
+            "traffic": l.source if l.source in ('marketing', 'natural', 'short_video', 'live') else None,
+            "assigned_employee": l.assigned_employee,
+            "ad_account": l.ad_account,
+            "phone_masked": l.phone_masked,
+            "phone_decrypted": "",
+            "product_name": l.product_name,
+            "lead_id": l.lead_id,
+            "phone": "",
+            "weixin": l.weixin or "",
+        }
+
+    def _api_dto(c: ApiClue):
+        phone = c.phone_decrypted or c.enc_telephone or ''
+        return {
+            "id": f"api_{c.id}",
+            "origin": "api_clues",
+            "session_id": c.session_id,
+            "lead_time": c.create_time_detail or c.modify_time,
+            "nickname": c.name or c.author_nickname or '(匿名)',
+            "city": c.city_name or c.auto_city_name or '',
+            "path": c.flow_entrance or '',
+            "tags": c.clue_type or '',
+            "is_valid": None,
+            "is_deal": False,
+            "source": "excel" if c.clue_source and c.clue_source.startswith('multidim') else (c.clue_source or "api"),
+            "traffic": c.flow_type if c.flow_type in ('marketing', 'natural', 'short_video', 'live') else None,
+            "assigned_employee": None,
+            "ad_account": c.advertiser_name or c.ad_type or '',
+            "phone_masked": phone[-4:] if phone else '',
+            "phone_decrypted": phone,
+            "product_name": c.product_name or '',
+            "phone": phone,
+            "weixin": c.weixin or '',
+        }
+
+    show_leads = not query_leads_only
+    show_api = not query_api_only
+
     total = 0
-    if not query_api_only:
-        total += lead_query.count()
-    if source == 'api' or not source:
-        total += api_query.count()
-
-    # 取数据
     items = []
-    skip = (page-1)*size
-    take = size
 
-    if not query_api_only:
-        lead_items = lead_query.offset(skip).limit(take).all()
-        for l in lead_items:
-            items.append({
-                "id": f"lead_{l.id}", "origin": "leads",
-                "session_id": l.session_id, "lead_time": l.lead_time,
-                "nickname": l.nickname, "city": l.city, "path": l.path,
-                "tags": l.tags, "is_valid": l.is_valid, "is_deal": l.is_deal,
-                "source": l.source or "tm",
-                "assigned_employee": l.assigned_employee,
-                "ad_account": l.ad_account,
-                "phone_masked": l.phone_masked,
-                "product_name": l.product_name,
-            })
-        taken = len(lead_items)
-        skip = max(0, skip - lead_query.count())
-        take -= taken
+    if show_leads and show_api:
+        # 全局排序：从两个来源获取全部数据，按排序字段合并后分页
+        lead_all = lead_query.all()
+        api_all = api_query.all()
 
-    if (source == 'api' or not source) and take > 0:
-        api_items = api_query.offset(skip).limit(take).all()
-        for c in api_items:
-            phone = c.phone_decrypted or c.enc_telephone or ''
-            items.append({
-                "id": f"api_{c.id}", "origin": "api_clues",
-                "session_id": c.session_id,
-                "lead_time": c.create_time_detail or c.modify_time,
-                "nickname": c.name or c.author_nickname or '(匿名)',
-                "city": c.city_name or c.auto_city_name or '',
-                "path": c.flow_entrance or '',
-                "tags": c.clue_type or '',
-                "is_valid": None,
-                "is_deal": False,
-                "source": "api",
-                "assigned_employee": None,
-                "ad_account": c.advertiser_name or c.ad_type or '',
-                "phone_masked": phone[-4:] if phone else '',
-                "product_name": c.product_name or '',
-                "phone": phone,
-                "weixin": c.weixin or '',
-            })
+        # 统一为 DTO 列表
+        dtos = [_lead_dto(l) for l in lead_all] + [_api_dto(c) for c in api_all]
 
-    return {"code": 0, "data": {"items": items, "total": total}}
+        # 全局排序
+        SORT_FIELDS = {'lead_time', 'nickname', 'city', 'created_at'}
+        if sort_by in SORT_FIELDS:
+            reverse = (sort_order == 'desc')
+            dtos.sort(key=lambda x: (x.get(sort_by) or ''), reverse=reverse)
+
+        total = len(dtos)
+        items = dtos[(page - 1) * size: page * size]
+    elif show_leads:
+        lead_count = lead_query.count()
+        total = lead_count
+        lead_items = lead_query.offset((page - 1) * size).limit(size).all()
+        items = [_lead_dto(l) for l in lead_items]
+    elif show_api:
+        api_count = api_query.count()
+        total = api_count
+        api_items = api_query.offset((page - 1) * size).limit(size).all()
+        items = [_api_dto(c) for c in api_items]
+
+    total_pages = max(1, (total + size - 1) // size) if size > 0 else 1
+    return {"code": 0, "data": {"items": items, "total": total, "total_pages": total_pages}}
 
 @router.get("/leads/{lead_id}/assignment")
-def get_lead_assignment(lead_id: int, admin=Depends(get_current_admin), db=Depends(get_db)):
+def get_lead_assignment(lead_id: Union[int, str], admin=Depends(get_current_admin), db=Depends(get_db)):
     """查询线索的分配团队/员工信息，用于成单时自动填充"""
-    lead = db.query(Lead).get(lead_id)
+    lead = _get_lead(db, lead_id)
     if not lead:
         return {"code": 404, "message": "线索不存在"}
     # 尝试通过手机号匹配ApiClue的分配记录
@@ -685,14 +859,15 @@ def list_schedule_plans(active_only: bool = False, admin=Depends(get_current_adm
     plans = query.all()
     return {"code": 0, "data": [{"id": p.id, "name": p.name, "start_time": p.start_time, "end_time": p.end_time,
         "time_granularity": p.time_granularity, "room_count": p.room_count, "anchor_count": p.anchor_count,
-        "is_active": p.is_active, "notes": p.notes} for p in plans]}
+        "operator_count": p.operator_count, "is_active": p.is_active, "notes": p.notes} for p in plans]}
 
 @router.post("/schedule/plans")
 def create_schedule_plan(data: dict, admin=Depends(get_current_admin), db=Depends(get_db)):
     plan = SchedulePlan(
         name=data["name"], start_time=data["start_time"], end_time=data["end_time"],
         time_granularity=data.get("time_granularity", 60), room_count=data.get("room_count", 2),
-        anchor_count=data.get("anchor_count", 5), is_active=data.get("is_active", True),
+        anchor_count=data.get("anchor_count", 5), operator_count=data.get("operator_count", 1),
+        is_active=data.get("is_active", True),
         notes=data.get("notes"))
     db.add(plan); db.commit()
     _generate_slots(db, plan)
@@ -710,6 +885,7 @@ def update_schedule_plan(plan_id: int, data: dict, admin=Depends(get_current_adm
     if "time_granularity" in data: plan.time_granularity = data["time_granularity"]; rebuild_slots = True
     if "room_count" in data: plan.room_count = data["room_count"]; rebuild_slots = True
     if "anchor_count" in data: plan.anchor_count = data["anchor_count"]
+    if "operator_count" in data: plan.operator_count = data.get("operator_count", 1)
     if "is_active" in data: plan.is_active = data["is_active"]
     if "notes" in data: plan.notes = data["notes"]
     if rebuild_slots:
@@ -738,9 +914,9 @@ def get_schedule_slots(plan_id: int, admin=Depends(get_current_admin), db=Depend
     return {"code": 0, "data": {
         "plan": {"id": plan.id, "name": plan.name, "start_time": plan.start_time, "end_time": plan.end_time,
             "time_granularity": plan.time_granularity, "room_count": plan.room_count, "anchor_count": plan.anchor_count,
-            "is_active": plan.is_active, "notes": plan.notes},
+            "operator_count": plan.operator_count, "is_active": plan.is_active, "notes": plan.notes},
         "slots": [{"id": s.id, "time_slot": s.time_slot, "room_index": s.room_index,
-            "slot_status": s.slot_status, "anchor_slot": s.anchor_slot} for s in slots]}}
+            "slot_status": s.slot_status, "anchor_slot": s.anchor_slot, "operator_slot": s.operator_slot} for s in slots]}}
 
 @router.put("/schedule/plans/{plan_id}/slots")
 def save_schedule_slots(plan_id: int, data: dict, admin=Depends(get_current_admin), db=Depends(get_db)):
@@ -757,6 +933,7 @@ def save_schedule_slots(plan_id: int, data: dict, admin=Depends(get_current_admi
             room_index=int(item.get("room_index") or 1),
             slot_status=item.get("slot_status") or "off_air",
             anchor_slot=int(item["anchor_slot"]) if item.get("anchor_slot") else None,
+            operator_slot=int(item["operator_slot"]) if item.get("operator_slot") else None,
         )
         db.add(slot)
     db.commit()
@@ -772,13 +949,16 @@ def list_schedule_bindings(year: int = None, month: int = None, admin=Depends(ge
         query = query.filter(ScheduleBinding.date.like(f"{prefix}%"))
     bindings = query.order_by(ScheduleBinding.date).all()
     return {"code": 0, "data": [{"id": b.id, "date": b.date, "plan_id": b.plan_id,
-        "plan_name": b.plan.name if b.plan else None, "anchor_mapping": json.loads(b.anchor_mapping)} for b in bindings]}
+        "plan_name": b.plan.name if b.plan else None, "anchor_mapping": json.loads(b.anchor_mapping),
+        "recruit_team_id": b.recruit_team_id,
+        "recruit_team_name": b.recruit_team.name if b.recruit_team else None} for b in bindings]}
 
 @router.post("/schedule/bindings")
 def create_schedule_binding(data: dict, admin=Depends(get_current_admin), db=Depends(get_db)):
     dates = data.get("dates", [])
     plan_id = data.get("plan_id")
     anchor_mapping = data.get("anchor_mapping", {})
+    recruit_team_id = data.get("recruit_team_id")
     if not dates or not plan_id:
         raise HTTPException(400, "缺少日期或方案ID")
     plan = db.query(SchedulePlan).get(plan_id)
@@ -790,10 +970,13 @@ def create_schedule_binding(data: dict, admin=Depends(get_current_admin), db=Dep
         if existing:
             existing.plan_id = plan_id
             existing.anchor_mapping = mapping_json
+            if recruit_team_id is not None:
+                existing.recruit_team_id = recruit_team_id
             results.append({"date": date_str, "action": "updated"})
             _sync_session_anchors(db, date_str, plan, anchor_mapping, binding_id=existing.id)
         else:
-            binding = ScheduleBinding(date=date_str, plan_id=plan_id, anchor_mapping=mapping_json)
+            binding = ScheduleBinding(date=date_str, plan_id=plan_id, anchor_mapping=mapping_json,
+                                      recruit_team_id=recruit_team_id or None)
             db.add(binding)
             results.append({"date": date_str, "action": "created"})
             _sync_session_anchors(db, date_str, plan, anchor_mapping)
@@ -879,7 +1062,9 @@ def get_schedule_log(date: str, admin=Depends(get_current_admin), db=Depends(get
     # 查询临时加班时段（BindingSlot）
     overtime_slots = db.query(BindingSlot).filter(BindingSlot.binding_id == binding.id).order_by(BindingSlot.time_slot).all() if is_bound else []
     return {"code": 0, "data": {
-        "binding": {"id": binding.id, "date": date, "plan_id": binding.plan_id},
+        "binding": {"id": binding.id, "date": date, "plan_id": binding.plan_id,
+            "recruit_team_id": binding.recruit_team_id,
+            "recruit_team_name": binding.recruit_team.name if binding.recruit_team else None},
         "plan": {"id": plan.id, "name": plan.name, "start_time": plan.start_time, "end_time": plan.end_time,
             "time_granularity": plan.time_granularity, "room_count": plan.room_count, "anchor_count": plan.anchor_count},
         "slots": [{"time_slot": s.time_slot, "room_index": s.room_index,
@@ -892,6 +1077,114 @@ def get_schedule_log(date: str, admin=Depends(get_current_admin), db=Depends(get
         "is_bound": is_bound,
         "bound_date": bound_date,
         "unbound_tip": "（当日未绑定，使用同月方案，anchor_mapping仅供参考）" if not is_bound else None}
+
+
+# ===== 周默认排班方案 API =====
+
+@router.get("/schedule/weekday-defaults")
+def list_weekday_defaults(admin=Depends(get_current_admin), db=Depends(get_db)):
+    """获取周一至周日的默认排班方案配置"""
+    from models import WeekdayDefault
+    defaults = db.query(WeekdayDefault).order_by(WeekdayDefault.weekday).all()
+    result = []
+    for d in defaults:
+        result.append({
+            "weekday": d.weekday,
+            "plan_id": d.plan_id,
+            "plan_name": d.plan.name if d.plan else None,
+            "anchor_mapping": json.loads(d.anchor_mapping) if d.anchor_mapping else {},
+            "recruit_team_id": d.recruit_team_id,
+            "recruit_team_name": d.recruit_team.name if d.recruit_team else None,
+        })
+    # 补全 7 天结构（缺则 null）
+    wd_names = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+    for i in range(7):
+        if not any(r["weekday"] == i for r in result):
+            result.append({"weekday": i, "weekday_name": wd_names[i],
+                           "plan_id": None, "plan_name": None,
+                           "anchor_mapping": {}, "recruit_team_id": None, "recruit_team_name": None})
+    result.sort(key=lambda x: x["weekday"])
+    return {"code": 0, "data": result}
+
+
+@router.put("/schedule/weekday-defaults/{weekday}")
+def update_weekday_default(weekday: int, data: dict, admin=Depends(get_current_admin), db=Depends(get_db)):
+    """更新某天的默认排班方案"""
+    from models import WeekdayDefault
+    if weekday < 0 or weekday > 6:
+        return {"code": 400, "message": "weekday must be 0-6 (Mon-Sun)"}
+    plan_id = data.get("plan_id")
+    if not plan_id:
+        return {"code": 400, "message": "缺少方案ID"}
+    anchor_mapping = data.get("anchor_mapping", {})
+    recruit_team_id = data.get("recruit_team_id")
+
+    default = db.query(WeekdayDefault).filter(WeekdayDefault.weekday == weekday).first()
+    if default:
+        default.plan_id = plan_id
+        default.anchor_mapping = json.dumps(anchor_mapping, ensure_ascii=False)
+        if recruit_team_id is not None:
+            default.recruit_team_id = recruit_team_id
+    else:
+        default = WeekdayDefault(
+            weekday=weekday, plan_id=plan_id,
+            anchor_mapping=json.dumps(anchor_mapping, ensure_ascii=False),
+            recruit_team_id=recruit_team_id or None,
+        )
+        db.add(default)
+    db.commit()
+    return {"code": 0, "message": f"周{['一','二','三','四','五','六','日'][weekday]}默认方案已保存"}
+
+
+@router.post("/schedule/apply-weekday-defaults")
+def apply_weekday_defaults(data: dict, admin=Depends(get_current_admin), db=Depends(get_db)):
+    """将周默认方案应用到指定月份的所有日期（跳过已绑定日）"""
+    from models import WeekdayDefault
+    import calendar
+    from datetime import date as dt_date
+
+    year = data.get("year")
+    month = data.get("month")
+    if not year or not month:
+        return {"code": 400, "message": "缺少year或month参数"}
+
+    defaults = {d.weekday: d for d in db.query(WeekdayDefault).all()}
+    if not defaults:
+        return {"code": 400, "message": "请先配置周默认排班方案"}
+
+    created = 0
+    skipped = 0
+    days_in_month = calendar.monthrange(year, month)[1]
+
+    for day in range(1, days_in_month + 1):
+        date_str = f"{year}-{month:02d}-{day:02d}"
+        wd = dt_date(year, month, day).weekday()  # 0=Mon
+
+        default = defaults.get(wd)
+        if not default:
+            continue
+
+        existing = db.query(ScheduleBinding).filter(ScheduleBinding.date == date_str).first()
+        if existing:
+            skipped += 1
+            continue
+
+        plan = db.query(SchedulePlan).get(default.plan_id)
+        if not plan:
+            continue
+
+        binding = ScheduleBinding(
+            date=date_str, plan_id=default.plan_id,
+            anchor_mapping=default.anchor_mapping,
+            recruit_team_id=default.recruit_team_id,
+        )
+        db.add(binding)
+        created += 1
+
+    db.commit()
+    return {"code": 0, "message": f"应用完成：新增{created}天，跳过{skipped}天（已绑定）",
+            "data": {"created": created, "skipped": skipped}}
+
 
 # ===== 直播账户 API =====
 
@@ -1419,6 +1712,234 @@ def update_push_config(data: dict, admin=Depends(get_current_admin), db: DBSessi
     return {"code": 0, "message": "推送配置已更新"}
 
 
+# ===== 采集记录 API =====
+
+@router.get("/collection-logs")
+def list_collection_logs(page: int = 1, size: int = 20, session_date: str = None, status: str = None, action: str = None, admin=Depends(get_current_admin), db: DBSession = Depends(get_db)):
+    """获取采集记录列表"""
+    from models import CollectionLog
+    query = db.query(CollectionLog).order_by(CollectionLog.id.desc())
+    if session_date:
+        query = query.filter(CollectionLog.session_date == session_date)
+    if status:
+        query = query.filter(CollectionLog.status == status)
+    if action:
+        query = query.filter(CollectionLog.action == action)
+    total = query.count()
+    logs = query.offset((page - 1) * size).limit(size).all()
+    return {"code": 0, "data": {
+        "total": total, "page": page, "size": size,
+        "items": [{"id": l.id, "request_id": l.request_id, "session_id": l.session_id,
+                   "session_date": l.session_date, "session_start_time": l.session_start_time,
+                   "session_end_time": l.session_end_time, "room_index": l.room_index,
+                   "ad_account_id": l.ad_account_id, "script_version": l.script_version,
+                   "action": l.action, "status": l.status,
+                   "updated_fields": l.updated_fields,
+                   "metrics_count": l.metrics_count,
+                   "leads_inserted": l.leads_inserted, "leads_updated": l.leads_updated,
+                   "comments_inserted": l.comments_inserted,
+                   "high_intent_inserted": l.high_intent_inserted,
+                   "private_messages_inserted": l.private_messages_inserted,
+                   "duration_ms": l.duration_ms, "message": l.message,
+                   "created_at": l.created_at} for l in logs]
+    }}
+
+
+@router.get("/collection-logs/{log_id}")
+def get_collection_log(log_id: int, admin=Depends(get_current_admin), db: DBSession = Depends(get_db)):
+    """获取采集记录详情"""
+    from models import CollectionLog
+    log = db.query(CollectionLog).get(log_id)
+    if not log:
+        return {"code": 404, "message": "记录不存在"}
+    return {"code": 0, "data": {
+        "id": log.id, "request_id": log.request_id, "session_id": log.session_id,
+        "session_date": log.session_date, "session_start_time": log.session_start_time,
+        "session_end_time": log.session_end_time, "room_index": log.room_index,
+        "ad_account_id": log.ad_account_id, "script_version": log.script_version,
+        "action": log.action, "status": log.status,
+        "updated_fields": log.updated_fields,
+        "metrics_count": log.metrics_count,
+        "leads_inserted": log.leads_inserted, "leads_updated": log.leads_updated,
+        "comments_inserted": log.comments_inserted,
+        "high_intent_inserted": log.high_intent_inserted,
+        "private_messages_inserted": log.private_messages_inserted,
+        "duration_ms": log.duration_ms, "message": log.message,
+        "created_at": log.created_at
+    }}
+
+
+# ===== 直播计划 API =====
+
+@router.get("/live-plans")
+def list_live_plans(date_from: str = None, date_to: str = None, plan_id: int = None,
+                     page: int = 1, size: int = 31,
+                     admin=Depends(get_current_admin), db: DBSession = Depends(get_db)):
+    """获取直播计划列表"""
+    from models import ScheduleDay, ScheduleDayAnchor, ScheduleDayOperator, SchedulePlan, ScheduleBinding
+    query = db.query(ScheduleDay).order_by(ScheduleDay.date)
+    if date_from:
+        query = query.filter(ScheduleDay.date >= date_from)
+    if date_to:
+        query = query.filter(ScheduleDay.date <= date_to)
+    if plan_id:
+        query = query.filter(ScheduleDay.plan_id == plan_id)
+    total = query.count()
+    days = query.offset((page - 1) * size).limit(size).all()
+    result = []
+    for d in days:
+        plan = db.query(SchedulePlan).get(d.plan_id) if d.plan_id else None
+        anchor_count = db.query(ScheduleDayAnchor).filter(ScheduleDayAnchor.day_id == d.id).count()
+        operator_count = db.query(ScheduleDayOperator).filter(ScheduleDayOperator.day_id == d.id).count()
+        result.append({
+            "id": d.id, "date": d.date,
+            "plan_id": d.plan_id, "plan_name": plan.name if plan else None,
+            "plan_start": plan.start_time if plan else None,
+            "plan_end": plan.end_time if plan else None,
+            "anchor_count": anchor_count,
+            "operator_count": operator_count,
+            "source": d.source or "manual",
+            "status": d.status or "draft",
+            "recruit_team_id": d.recruit_team_id,
+            "recruit_team_name": d.recruit_team.name if d.recruit_team else None,
+            "notes": d.notes,
+            "created_at": d.created_at,
+        })
+    return {"code": 0, "data": {"total": total, "page": page, "size": size, "items": result}}
+
+
+@router.get("/live-plans/{day_id}")
+def get_live_plan(day_id: int, admin=Depends(get_current_admin), db: DBSession = Depends(get_db)):
+    """获取直播计划详情"""
+    from models import ScheduleDay, ScheduleDayAnchor, ScheduleDayOperator, SchedulePlan, ScheduleBinding, RoomAccountBinding
+    day = db.query(ScheduleDay).get(day_id)
+    if not day:
+        return {"code": 404, "message": "计划不存在"}
+    plan = db.query(SchedulePlan).get(day.plan_id) if day.plan_id else None
+    anchors = db.query(ScheduleDayAnchor).filter(ScheduleDayAnchor.day_id == day.id).order_by(ScheduleDayAnchor.order_index).all()
+    operators = db.query(ScheduleDayOperator).filter(ScheduleDayOperator.day_id == day.id).order_by(ScheduleDayOperator.order_index).all()
+    rooms = db.query(RoomAccountBinding).filter(RoomAccountBinding.date == day.date).order_by(RoomAccountBinding.room_index).all()
+    return {"code": 0, "data": {
+        "id": day.id, "date": day.date,
+        "plan_id": day.plan_id, "source": day.source, "status": day.status,
+        "recruit_team_id": day.recruit_team_id,
+        "recruit_team_name": day.recruit_team.name if day.recruit_team else None,
+        "plan": {"id": plan.id, "name": plan.name, "start_time": plan.start_time, "end_time": plan.end_time,
+                 "room_count": plan.room_count, "anchor_count": plan.anchor_count, "operator_count": plan.operator_count} if plan else None,
+        "anchors": [{"id": a.id, "anchor_name": a.anchor_name, "room_index": a.room_index,
+                     "time_slots": a.time_slots, "total_hours": a.total_hours, "order_index": a.order_index} for a in anchors],
+        "operators": [{"id": o.id, "operator_name": o.operator_name, "room_index": o.room_index,
+                       "time_slots": o.time_slots, "total_hours": o.total_hours, "order_index": o.order_index} for o in operators],
+        "rooms": [{"id": r.id, "room_index": r.room_index, "ad_account_id": r.ad_account_id} for r in rooms],
+        "notes": day.notes,
+        "created_at": day.created_at,
+    }}
+
+
+@router.post("/live-plans")
+def create_live_plan(data: dict, admin=Depends(get_current_admin), db: DBSession = Depends(get_db)):
+    """创建直播计划"""
+    from models import ScheduleDay, ScheduleDayAnchor, ScheduleDayOperator, SchedulePlan
+    date_str = data.get("date", "")
+    if not date_str:
+        return {"code": 400, "message": "缺少日期"}
+    plan_id = data.get("plan_id")
+    if not plan_id:
+        return {"code": 400, "message": "缺少排班方案ID"}
+    plan = db.query(SchedulePlan).get(plan_id)
+    if not plan:
+        return {"code": 404, "message": "排班方案不存在"}
+    existing = db.query(ScheduleDay).filter(ScheduleDay.date == date_str).first()
+    if existing:
+        return {"code": 400, "message": "该日期已存在直播计划"}
+    day = ScheduleDay(date=date_str, plan_id=plan_id, source="manual",
+                       status=data.get("status", "draft"),
+                       notes=data.get("notes", ""),
+                       recruit_team_id=data.get("recruit_team_id"))
+    db.add(day)
+    db.flush()
+    # 创建主播安排
+    for anchor_item in data.get("anchors", []):
+        sa = ScheduleDayAnchor(
+            day_id=day.id, anchor_name=anchor_item.get("anchor_name", ""),
+            time_slots=json.dumps(anchor_item.get("time_slots", []), ensure_ascii=False),
+            total_hours=anchor_item.get("total_hours", 0),
+            room_index=anchor_item.get("room_index", 1),
+            order_index=anchor_item.get("order_index", 0),
+        )
+        db.add(sa)
+    # 创建运营安排
+    for op_item in data.get("operators", []):
+        so = ScheduleDayOperator(
+            day_id=day.id, operator_name=op_item.get("operator_name", ""),
+            time_slots=json.dumps(op_item.get("time_slots", []), ensure_ascii=False),
+            total_hours=op_item.get("total_hours", 0),
+            room_index=op_item.get("room_index", 1),
+            order_index=op_item.get("order_index", 0),
+        )
+        db.add(so)
+    db.commit()
+    return {"code": 0, "day_id": day.id}
+
+
+@router.put("/live-plans/{day_id}")
+def update_live_plan(day_id: int, data: dict, admin=Depends(get_current_admin), db: DBSession = Depends(get_db)):
+    """更新直播计划"""
+    from models import ScheduleDay, ScheduleDayAnchor, ScheduleDayOperator
+    day = db.query(ScheduleDay).get(day_id)
+    if not day:
+        return {"code": 404, "message": "计划不存在"}
+    if "plan_id" in data:
+        day.plan_id = data["plan_id"]
+    if "status" in data:
+        day.status = data["status"]
+    if "notes" in data:
+        day.notes = data["notes"]
+    if "recruit_team_id" in data:
+        day.recruit_team_id = data["recruit_team_id"]
+    day.updated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    # 更新主播安排
+    if "anchors" in data:
+        db.query(ScheduleDayAnchor).filter(ScheduleDayAnchor.day_id == day.id).delete()
+        for anchor_item in data["anchors"]:
+            sa = ScheduleDayAnchor(
+                day_id=day.id, anchor_name=anchor_item.get("anchor_name", ""),
+                time_slots=json.dumps(anchor_item.get("time_slots", []), ensure_ascii=False),
+                total_hours=anchor_item.get("total_hours", 0),
+                room_index=anchor_item.get("room_index", 1),
+                order_index=anchor_item.get("order_index", 0),
+            )
+            db.add(sa)
+    # 更新运营安排
+    if "operators" in data:
+        db.query(ScheduleDayOperator).filter(ScheduleDayOperator.day_id == day.id).delete()
+        for op_item in data["operators"]:
+            so = ScheduleDayOperator(
+                day_id=day.id, operator_name=op_item.get("operator_name", ""),
+                time_slots=json.dumps(op_item.get("time_slots", []), ensure_ascii=False),
+                total_hours=op_item.get("total_hours", 0),
+                room_index=op_item.get("room_index", 1),
+                order_index=op_item.get("order_index", 0),
+            )
+            db.add(so)
+    db.commit()
+    return {"code": 0}
+
+
+@router.delete("/live-plans/{day_id}")
+def delete_live_plan(day_id: int, admin=Depends(get_current_admin), db: DBSession = Depends(get_db)):
+    """删除直播计划"""
+    from models import ScheduleDay, ScheduleDayAnchor, ScheduleDayOperator
+    day = db.query(ScheduleDay).get(day_id)
+    if not day:
+        return {"code": 404, "message": "计划不存在"}
+    db.query(ScheduleDayAnchor).filter(ScheduleDayAnchor.day_id == day.id).delete()
+    db.query(ScheduleDayOperator).filter(ScheduleDayOperator.day_id == day.id).delete()
+    db.delete(day)
+    db.commit()
+    return {"code": 0}
+
+
 @router.get("/poll-logs")
 def list_poll_logs(page: int = 1, size: int = 20, admin=Depends(get_current_admin), db: DBSession = Depends(get_db)):
     """获取采集日志列表"""
@@ -1682,6 +2203,8 @@ def create_manual_clue(req: ManualClueCreate, admin=Depends(get_current_admin), 
         session_id=target_session_id,
         lead_time=now_str[:16],
         nickname=req.name or "",
+        lead_id=clue_id_str,
+        phone_masked=(req.phone[-4:] if req.phone else None),
         city="",
         path="手动添加",
         tags="",
@@ -1690,7 +2213,9 @@ def create_manual_clue(req: ManualClueCreate, admin=Depends(get_current_admin), 
         source=req.source or "manual",
         assigned_employee=None,
         ad_account="",
+        weixin=req.weixin,
     )
+
     db.add(new_lead)
     db.commit()
     db.refresh(new_clue)
@@ -2018,3 +2543,317 @@ def delete_ad_plan_spend(spend_id: int, admin=Depends(get_current_admin), db: DB
     db.delete(spend)
     db.commit()
     return {"code": 0, "message": "记录已删除"}
+
+
+# ===== 多维数据导入 API =====
+
+@router.post("/multidim/upload")
+async def multidim_upload(
+    file: UploadFile = File(...),
+    admin=Depends(get_current_admin),
+    db: DBSession = Depends(get_db),
+):
+    """上传并解析多维数据文件，返回每个sheet的预览和去重预检结果"""
+    from services.import_service import parse_file, process_sheets
+
+    if not file.filename:
+        return {"code": 400, "message": "请选择文件"}
+
+    ext = file.filename.lower().split('.')[-1] if '.' in file.filename else ''
+    if ext not in ('xlsx', 'xls', 'csv'):
+        return {"code": 400, "message": f"不支持的文件格式: .{ext}（仅支持 .xlsx, .xls, .csv）"}
+
+    try:
+        content = await file.read()
+        sheets = parse_file(content, file.filename)
+        if not sheets:
+            return {"code": 400, "message": "文件为空或无法解析"}
+
+        result = process_sheets(sheets, db)
+        return {"code": 0, "data": result}
+
+    except ValueError as e:
+        return {"code": 400, "message": str(e)}
+    except Exception as e:
+        logger.error(f"多维数据导入解析失败: {e}", exc_info=True)
+        return {"code": 500, "message": f"文件解析失败: {str(e)}"}
+
+
+@router.post("/multidim/confirm")
+async def multidim_confirm(
+    file: UploadFile = File(...),
+    admin=Depends(get_current_admin),
+    db: DBSession = Depends(get_db),
+):
+    """确认导入多维数据
+    接收文件字节，重新解析后执行去重写入（避免前端传递预解析数据的不一致问题）
+    """
+    from services.import_service import parse_file, import_sheets
+
+    if not file.filename:
+        return {"code": 400, "message": "请选择文件"}
+
+    file_format = file.filename.lower().split('.')[-1] if '.' in file.filename else ''
+    if file_format not in ('xlsx', 'xls', 'csv'):
+        return {"code": 400, "message": f"不支持的文件格式: .{file_format}"}
+
+    admin_name = admin if isinstance(admin, str) else str(getattr(admin, "username", "admin"))
+
+    try:
+        content = await file.read()
+        sheets = parse_file(content, file.filename)
+        if not sheets:
+            return {"code": 400, "message": "文件为空或无法解析"}
+
+        result = import_sheets(sheets, db, file.filename, file_format, admin_name)
+        msg = f"导入完成：成功{result['inserted_count']}条，跳过{result['skipped_count']}条（重复）"
+        if result['error_count'] > 0:
+            msg += f"，错误{result['error_count']}条"
+        return {"code": 0, "message": msg, "data": result}
+    except Exception as e:
+        logger.error(f"多维数据导入确认失败: {e}", exc_info=True)
+        # 写入失败记录
+        try:
+            from models import MultiDimImportBatch
+            from datetime import datetime
+            batch = MultiDimImportBatch(
+                filename=file.filename, file_format=file_format,
+                admin_name=admin_name, status="error",
+                error_message=str(e),
+                imported_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            )
+            db.add(batch); db.commit()
+        except Exception:
+            pass
+        return {"code": 500, "message": f"导入失败: {str(e)}"}
+
+
+@router.get("/multidim/batches")
+def list_multidim_batches(
+    page: int = 1,
+    size: int = 20,
+    admin=Depends(get_current_admin),
+    db: DBSession = Depends(get_db),
+):
+    """获取多维数据导入批次列表"""
+    total = db.query(MultiDimImportBatch).count()
+    batches = db.query(MultiDimImportBatch).order_by(
+        MultiDimImportBatch.imported_at.desc()
+    ).offset((page - 1) * size).limit(size).all()
+
+    return {
+        "code": 0,
+        "data": {
+            "total": total,
+            "page": page,
+            "size": size,
+            "items": [
+                {
+                    "id": b.id,
+                    "filename": b.filename,
+                    "file_format": b.file_format,
+                    "admin_name": b.admin_name,
+                    "total_rows": b.total_rows,
+                    "inserted_count": b.inserted_count,
+                    "skipped_count": b.skipped_count,
+                    "error_count": b.error_count,
+                    "by_type": json.loads(b.by_type_json) if b.by_type_json else {},
+                    "status": b.status,
+                    "error_message": b.error_message,
+                    "imported_at": b.imported_at,
+                }
+                for b in batches
+            ],
+        },
+    }
+
+
+@router.get("/multidim/batches/{batch_id}/skips")
+def list_multidim_skips(
+    batch_id: int,
+    page: int = 1,
+    size: int = 50,
+    admin=Depends(get_current_admin),
+    db: DBSession = Depends(get_db),
+):
+    """获取指定导入批次的跳过记录（重复/缺字段）"""
+    total = db.query(MultiDimImportSkip).filter(
+        MultiDimImportSkip.batch_id == batch_id
+    ).count()
+
+    skips = db.query(MultiDimImportSkip).filter(
+        MultiDimImportSkip.batch_id == batch_id
+    ).order_by(MultiDimImportSkip.row_index).offset(
+        (page - 1) * size
+    ).limit(size).all()
+
+    return {
+        "code": 0,
+        "data": {
+            "total": total,
+            "page": page,
+            "size": size,
+            "items": [
+                {
+                    "id": s.id,
+                    "sheet_type": s.sheet_type,
+                    "sheet_name": s.sheet_name,
+                    "row_index": s.row_index,
+                    "contact_norm": s.contact_norm,
+                    "wechat": s.wechat,
+                    "reason": s.reason,
+                    "detail": s.detail,
+                    "raw_data": s.raw_data,
+                    "created_at": s.created_at,
+                }
+                for s in skips
+            ],
+        },
+    }
+
+
+@router.get("/multidim/records")
+def list_multidim_records(
+    sheet_type: str = None,
+    keyword: str = None,
+    page: int = 1,
+    size: int = 20,
+    admin=Depends(get_current_admin),
+    db: DBSession = Depends(get_db),
+):
+    """查询多维数据导入记录"""
+    query = db.query(MultiDimRecord).order_by(MultiDimRecord.created_at.desc())
+
+    if sheet_type:
+        query = query.filter(MultiDimRecord.sheet_type == sheet_type)
+    if keyword:
+        query = query.filter(
+            MultiDimRecord.contact_norm.contains(keyword)
+            | MultiDimRecord.wechat.contains(keyword)
+            | MultiDimRecord.name.contains(keyword)
+        )
+
+    total = query.count()
+    records = query.offset((page - 1) * size).limit(size).all()
+
+    return {
+        "code": 0,
+        "data": {
+            "total": total,
+            "page": page,
+            "size": size,
+            "items": [
+                {
+                    "id": r.id,
+                    "sheet_type": r.sheet_type,
+                    "period": r.period,
+                    "source_file": r.source_file,
+                    "contact_norm": r.contact_norm,
+                    "wechat": r.wechat,
+                    "name": r.name,
+                    "assign_date": r.assign_date,
+                    "assigned_teacher": r.assigned_teacher,
+                    "data_status": r.data_status,
+                    "raw_data": json.loads(r.raw_data) if r.raw_data else {},
+                    "row_index": r.row_index,
+                    "synced_to_lead": r.synced_to_lead,
+                    "created_at": r.created_at,
+                }
+                for r in records
+            ],
+        },
+    }
+
+
+@router.post("/multidim/import-schedule")
+async def import_schedule_xlsx(
+    file: UploadFile = File(...),
+    admin=Depends(get_current_admin),
+    db: DBSession = Depends(get_db),
+):
+    """导入直播排班表.xlsx，创建按天排班实例（ScheduleDay + ScheduleDayAnchor）
+    每天一个排班实例，每个主播独立时段，支持多段排班。
+    """
+    from services.import_service import parse_schedule_xlsx
+
+    if not file.filename:
+        return {"code": 400, "message": "请选择文件"}
+
+    if not file.filename.endswith('.xlsx'):
+        return {"code": 400, "message": "仅支持 .xlsx 格式"}
+
+    try:
+        content = await file.read()
+        result = parse_schedule_xlsx(content, db)
+
+        if result.get('error'):
+            return {"code": 400, "message": result['error']}
+
+        msg = f"导入完成：新增 {result['inserted']} 天排班，更新 {result.get('updated', 0)} 天，{result['anchors']} 个主播排班"
+        if result['skipped'] > 0:
+            msg += f"，跳过 {result['skipped']} 个已存在的日期"
+
+        return {"code": 0, "message": msg, "data": result}
+
+    except Exception as e:
+        logger.error(f"排班表导入失败: {e}", exc_info=True)
+        return {"code": 500, "message": f"导入失败: {str(e)}"}
+
+
+@router.get("/schedule/days")
+def list_schedule_days(
+    year: int = None,
+    month: int = None,
+    admin=Depends(get_current_admin),
+    db: DBSession = Depends(get_db),
+):
+    """查询日排班实例数据（ScheduleDay + ScheduleDayAnchor）
+    支持按年月筛选，返回每天的主播排班明细。
+    """
+    from models import ScheduleDay, ScheduleDayAnchor, SchedulePlan, Session, SessionMetric
+    from datetime import datetime as dt
+    from sqlalchemy import func
+
+    query = db.query(ScheduleDay).order_by(ScheduleDay.date)
+
+    if year and month:
+        prefix = f"{year}-{month:02d}"
+        query = query.filter(ScheduleDay.date.like(f"{prefix}%"))
+
+    days = query.all()
+    today = dt.now().strftime("%Y-%m-%d")
+    result = []
+    for day in days:
+        anchors = []
+        for a in day.anchors:
+            anchors.append({
+                "anchor_name": a.anchor_name,
+                "time_slots": json.loads(a.time_slots) if a.time_slots else [],
+                "total_hours": a.total_hours,
+                "order_index": a.order_index,
+            })
+        plan = db.query(SchedulePlan).get(day.plan_id) if day.plan_id else None
+        is_past = day.date < today
+        is_today = day.date == today
+        # 聚合当天每个直播间的消耗（ad_spend）
+        room_spend = {}
+        sessions = db.query(Session).filter(
+            Session.start_time.like(f"{day.date}%")
+        ).all()
+        for s in sessions:
+            ri = s.room_index or 1
+            if s.metrics and s.metrics.ad_spend:
+                room_spend[ri] = room_spend.get(ri, 0) + s.metrics.ad_spend
+        result.append({
+            "id": day.id,
+            "date": day.date,
+            "anchors": anchors,
+            "anchor_count": len(anchors),
+            "status": day.status or "draft",
+            "plan_name": plan.name if plan else None,
+            "is_past": is_past,
+            "is_today": is_today,
+            "room_spend": room_spend,
+        })
+
+    return {"code": 0, "data": result}

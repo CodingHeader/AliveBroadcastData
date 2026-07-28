@@ -34,6 +34,9 @@
     const CONFIG = {
         SERVER_URL: 'http://127.0.0.1:12306',
         ACCOUNT_ID: GM_getValue('account_id', '') || '',  // 广告账户ID，在脚本菜单中设置
+        COLLECT_LEADS: GM_getValue('collect_leads', 'false') === 'true', // 默认关闭线索采集
+        LEADS_PAGE_WAIT: 1200,
+        MAX_LEADS_PAGES: 200,
         CHECK_INTERVAL: 60 * 1000,
         COLLECT_HOUR: 1,       // 凌晨1点启动自动采集
         RETRY_COUNT: 3,
@@ -44,8 +47,15 @@
         COLLECT_DAYS: 1,      // 采集天数: 1=昨天, 30=最近30天, 数字越大耗时越长
         NAVIGATION_TIMEOUT: 60000, // goToLatest/navigateToDate 绝对超时（毫秒）
         MAX_NAVIGATION_STEPS: 50,  // goToLatest 最大翻页步数（原500，最坏4.2h）
-        HTTP_TIMEOUT: 15000,       // GM_xmlhttpRequest 统一超时（毫秒）
+        HTTP_TIMEOUT: 15000,       // GM_xmlhttpRequest 统一超时（毫秒)
     };
+
+    function setCollectLeadsEnabled(enabled) {
+        const next = !!enabled;
+        CONFIG.COLLECT_LEADS = next;
+        GM_setValue('collect_leads', String(next));
+        return next;
+    }
 
     // ========== 脚本菜单：设置直播告账户ID ==========
     GM_registerMenuCommand('设置直播账户ID', () => {
@@ -56,6 +66,10 @@
             CONFIG.ACCOUNT_ID = val.trim();
             alert('账户ID已设置为: ' + (val.trim() || '(空)'));
         }
+    });
+    GM_registerMenuCommand('切换线索采集开关', () => {
+        const next = setCollectLeadsEnabled(!CONFIG.COLLECT_LEADS);
+        alert('线索采集已' + (next ? '开启' : '关闭'));
     });
 
     // ========== 并发保护锁 ==========
@@ -306,7 +320,13 @@
     function isButtonDisabled(selector) {
         const btn = document.querySelector(selector);
         if (!btn) return null;
-        return btn.classList.contains('cursor-not-allowed');
+        const style = window.getComputedStyle(btn);
+        return (
+            btn.classList.contains('cursor-not-allowed') ||
+            btn.disabled === true ||
+            style.pointerEvents === 'none' ||
+            btn.getAttribute('aria-disabled') === 'true'
+        );
     }
 
     // ========== 等待数据加载 ==========
@@ -387,15 +407,30 @@
     // ========== 防重复检查（批量拉取，主流程使用）==========
     function getExistingSessions(dateStr) {
         return new Promise((resolve) => {
+            let url = `${CONFIG.SERVER_URL}/api/sessions/by-date?date=${encodeURIComponent(dateStr)}`;
+            if (CONFIG.ACCOUNT_ID) {
+                url += `&account_id=${encodeURIComponent(CONFIG.ACCOUNT_ID)}`;
+            }
             GM_xmlhttpRequest({
                 method: 'GET',
-                url: `${CONFIG.SERVER_URL}/api/sessions/by-date?date=${encodeURIComponent(dateStr)}`,
+                url: url,
                 timeout: CONFIG.HTTP_TIMEOUT,
                 onload: (resp) => {
                     try {
                         const data = JSON.parse(resp.responseText);
                         if (data.code === 0 && Array.isArray(data.starts)) {
-                            resolve(new Set(data.starts));
+                            // 使用账户ID+开始时间作为唯一键
+                            const existingSet = new Set();
+                            if (Array.isArray(data.sessions)) {
+                                data.sessions.forEach(s => {
+                                    const key = (s.ad_account_id || '') + '|' + s.start_time;
+                                    existingSet.add(key);
+                                });
+                            } else {
+                                // 兼容旧响应格式
+                                data.starts.forEach(s => existingSet.add(s));
+                            }
+                            resolve(existingSet);
                         } else {
                             resolve(new Set());
                         }
@@ -554,15 +589,6 @@
                 continue;
             }
 
-            // 检测分页器"下一页"按钮
-            const nextPagBtn = container.querySelector('[class*="next"]:not([class*="cursor-not-allowed"])') ||
-                container.querySelector('[aria-label="Next Page"]');
-            if (nextPagBtn) {
-                nextPagBtn.click();
-                await sleep(scrollDelay);
-                continue;
-            }
-
             // 虚拟滚动：向下滚动容器
             const prevScrollTop = container.scrollTop;
             container.scrollTop = container.scrollHeight;
@@ -577,8 +603,35 @@
         return results;
     }
 
+    function getLeadPagerElements() {
+        const allLis = Array.from(document.querySelectorAll('li.leads-pager-item'));
+        const nextLi = allLis.find(li => {
+            const icon = li.querySelector('.leads-icon-right');
+            return !!icon && !li.classList.contains('leads-pager-item-disabled');
+        }) || null;
+        const disabledNext = allLis.find(li => {
+            const icon = li.querySelector('.leads-icon-right');
+            return !!icon && li.classList.contains('leads-pager-item-disabled');
+        }) || null;
+        return { nextLi, disabledNext };
+    }
+
+    async function clickLeadNextPage() {
+        const { nextLi, disabledNext } = getLeadPagerElements();
+        if (disabledNext && !nextLi) return false;
+        if (!nextLi) return null;
+        nextLi.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+        await sleep(CONFIG.LEADS_PAGE_WAIT);
+        return true;
+    }
+
     // ========== 线索列表采集 ==========
     async function collectLeads() {
+        if (!CONFIG.COLLECT_LEADS) {
+            log('线索采集开关关闭，跳过线索采集');
+            return [];
+        }
+
         // 点击"线索分析"Tab
         const tab = document.querySelector(SELECTORS.leadsAnalysisTab);
         if (tab) {
@@ -586,77 +639,116 @@
             await sleep(CONFIG.TAB_SWITCH_DELAY);
         }
 
-        // 轮询等待线索表格数据就绪（历史场次数据加载可能超过TAB_SWITCH_DELAY）
-        let tables = document.querySelectorAll('table[role="table"]');
-        let bodyTable = Array.from(tables).find(t => t.querySelectorAll('tbody tr[role="row"]').length > 0);
-        const waitDeadline = Date.now() + 12000;
-        while (!bodyTable && Date.now() < waitDeadline) {
-            await sleep(1000);
-            tables = document.querySelectorAll('table[role="table"]');
-            bodyTable = Array.from(tables).find(t => t.querySelectorAll('tbody tr[role="row"]').length > 0);
-        }
-        // 最终fallback：找任何有tbody行的table，或按索引取
-        if (!bodyTable) {
-            bodyTable = Array.from(tables).find(t => t.querySelectorAll('tbody tr').length > 0) || tables[1] || tables[0];
-        }
-        const headTable = Array.from(tables).find(t => t.querySelector('thead tr'));
-        if (!bodyTable) {
-            log('未找到线索表格，尝试Legacy方式', 'warn');
-            return collectLeadsLegacy();
-        }
+        const allLeads = [];
+        const seen = new Set();
 
-        // 找到可滚动容器，验证包含预期行数（fallback到bodyTable本身）
-        const scrollContainer = bodyTable.closest('[class*="scroll"], [class*="virtual"], [style*="overflow"]') || bodyTable.parentElement;
-        const containerRowCount = scrollContainer ? scrollContainer.querySelectorAll('tbody tr[role="row"]').length : 0;
-        const effectiveContainer = containerRowCount > 0 ? scrollContainer : bodyTable;
-        log(`线索表格: ${tables.length}个table, body行数=${bodyTable.querySelectorAll('tbody tr[role="row"]').length}, container行数=${containerRowCount}`);
+        for (let page = 1; page <= CONFIG.MAX_LEADS_PAGES; page++) {
+            // 轮询等待线索表格数据就绪（历史场次数据加载可能超过TAB_SWITCH_DELAY）
+            let tables = document.querySelectorAll('table[role="table"]');
+            let bodyTable = Array.from(tables).find(t => t.querySelectorAll('tbody tr[role="row"]').length > 0);
+            const waitDeadline = Date.now() + 12000;
+            while (!bodyTable && Date.now() < waitDeadline) {
+                await sleep(1000);
+                tables = document.querySelectorAll('table[role="table"]');
+                bodyTable = Array.from(tables).find(t => t.querySelectorAll('tbody tr[role="row"]').length > 0);
+            }
+            // 最终fallback：找任何有tbody行的table，或按索引取
+            if (!bodyTable) {
+                bodyTable = Array.from(tables).find(t => t.querySelectorAll('tbody tr').length > 0) || tables[1] || tables[0];
+            }
+            const headTable = Array.from(tables).find(t => t.querySelector('thead tr'));
+            if (!bodyTable) {
+                log('未找到线索表格，尝试Legacy方式', 'warn');
+                const legacyLeads = collectLeadsLegacy();
+                for (const item of legacyLeads) {
+                    const key = `${item.lead_time}|${item.nickname}`;
+                    if (!seen.has(key)) {
+                        seen.add(key);
+                        allLeads.push(item);
+                    }
+                }
+                break;
+            }
 
-        // 动态列头映射：从表头读取列名，避免硬编码索引（表头可能在另一个table中）
-        const headerRow = (headTable || bodyTable)?.querySelector('thead tr');
-        const colMap = {};
-        if (headerRow) {
-            const headers = headerRow.querySelectorAll('th');
-            const HEADER_MAP = {
-                '留资时间': 'lead_time', '用户信息': 'nickname', '电话': 'phone_masked',
-                '商品名称': 'product_name', '所在城市': 'city', '留资路径': 'path',
-                '特征标签': 'tags', '来源客户': 'ad_account', '序号': '_seq',
-            };
-            headers.forEach((th, idx) => {
-                const text = th.textContent.trim();
-                if (HEADER_MAP[text]) colMap[HEADER_MAP[text]] = idx;
-            });
-        }
-        // fallback: 默认索引
-        if (Object.keys(colMap).length < 3) {
-            colMap.lead_time = 1; colMap.nickname = 2; colMap.phone_masked = 3;
-            colMap.product_name = 4; colMap.city = 5; colMap.path = 6;
-            colMap.tags = 7; colMap.ad_account = 8;
-        }
+            const scrollContainer = bodyTable.closest('[class*="scroll"], [class*="virtual"], [style*="overflow"]') || bodyTable.parentElement;
+            const containerRowCount = scrollContainer ? scrollContainer.querySelectorAll('tbody tr[role="row"]').length : 0;
+            const effectiveContainer = containerRowCount > 0 ? scrollContainer : bodyTable;
+            log(`线索表格第${page}页: ${tables.length}个table, body行数=${bodyTable.querySelectorAll('tbody tr[role="row"]').length}, container行数=${containerRowCount}`);
 
-        return scrollAndCollect({
-            container: effectiveContainer,
-            rowSelector: 'tbody tr[role="row"]',
-            parseFn: (row) => {
-                const cells = row.querySelectorAll('td');
-                if (cells.length < 3) return null;
-                const get = (field) => cells[colMap[field]]?.textContent?.trim() || '';
-                const phoneRaw = get('phone_masked');
-                const phoneMasked = phoneRaw.match(/\*+\d+/) ? phoneRaw.match(/\*+\d+/)[0] : phoneRaw;
-                return {
-                    lead_time: get('lead_time'),
-                    nickname: get('nickname'),
-                    lead_id: '',
-                    phone_masked: phoneMasked,
-                    product_name: get('product_name'),
-                    city: get('city'),
-                    path: get('path'),
-                    tags: get('tags'),
-                    ad_account: get('ad_account'),
+            const headerRow = (headTable || bodyTable)?.querySelector('thead tr');
+            const colMap = {};
+            if (headerRow) {
+                const headers = headerRow.querySelectorAll('th');
+                const HEADER_MAP = {
+                    '留资时间': 'lead_time', '用户信息': 'nickname', '电话': 'phone_masked',
+                    '商品名称': 'product_name', '所在城市': 'city', '留资路径': 'path',
+                    '特征标签': 'tags', '来源客户': 'ad_account', '序号': '_seq',
                 };
-            },
-            dedupKeyFn: (item) => `${item.lead_time}|${item.nickname}`,
-            label: '线索',
-        });
+                headers.forEach((th, idx) => {
+                    const text = th.textContent.trim();
+                    if (HEADER_MAP[text]) colMap[HEADER_MAP[text]] = idx;
+                });
+            }
+            if (Object.keys(colMap).length < 3) {
+                colMap.lead_time = 1; colMap.nickname = 2; colMap.phone_masked = 3;
+                colMap.product_name = 4; colMap.city = 5; colMap.path = 6;
+                colMap.tags = 7; colMap.ad_account = 8;
+            }
+
+            const pageLeads = await scrollAndCollect({
+                container: effectiveContainer,
+                rowSelector: 'tbody tr[role="row"]',
+                parseFn: (row) => {
+                    const cells = row.querySelectorAll('td');
+                    if (cells.length < 3) return null;
+                    const get = (field) => cells[colMap[field]]?.textContent?.trim() || '';
+                    const phoneRaw = get('phone_masked');
+                    const phoneMasked = phoneRaw.match(/\*+\d+/) ? phoneRaw.match(/\*+\d+/)[0] : phoneRaw;
+                    return {
+                        lead_time: get('lead_time'),
+                        nickname: get('nickname'),
+                        lead_id: '',
+                        phone_masked: phoneMasked,
+                        product_name: get('product_name'),
+                        city: get('city'),
+                        path: get('path'),
+                        tags: get('tags'),
+                        ad_account: get('ad_account'),
+                    };
+                },
+                dedupKeyFn: (item) => `${item.lead_time}|${item.nickname}`,
+                label: `线索-第${page}页`,
+            });
+
+            let added = 0;
+            for (const item of pageLeads) {
+                const key = `${item.lead_time}|${item.nickname}`;
+                if (!seen.has(key)) {
+                    seen.add(key);
+                    allLeads.push(item);
+                    added++;
+                }
+            }
+
+            const nextResult = await clickLeadNextPage();
+            if (nextResult === null) {
+                log(`线索分页已到末页或下一页按钮不可用，共采集${allLeads.length}条`);
+                break;
+            }
+            if (nextResult === false) {
+                log(`线索分页按钮不可点击，终止于第${page}页，共采集${allLeads.length}条`, 'warn');
+                break;
+            }
+            if (added === 0 && pageLeads.length === 0) {
+                log(`第${page}页未采集到新增线索，继续翻页以确认是否为重复页`, 'warn');
+            }
+        }
+
+        if (CONFIG.MAX_LEADS_PAGES > 0 && allLeads.length === 0) {
+            log('线索分页采集未获取到任何数据', 'warn');
+        }
+        log(`线索采集完成: ${allLeads.length}条`);
+        return allLeads;
     }
 
     // 线索列表采集（旧逻辑回退）
@@ -1180,13 +1272,13 @@
         }
 
         const review = await collectReviewData();
-        const leads = await collectLeads();
+        const leads = CONFIG.COLLECT_LEADS ? await collectLeads() : [];
         const privateMessages = await collectPrivateMessages();
         const comments = await collectComments();
         const highIntentUsers = await collectHighIntentUsers();
 
         // 交叉验证告警：列表为空但指标卡显示有数据
-        if (leads.length === 0 && parseFloat(metrics.total_leads) > 0) {
+        if (CONFIG.COLLECT_LEADS && leads.length === 0 && parseFloat(metrics.total_leads) > 0) {
             sendAlert('线索采集异常', `指标卡显示留资${metrics.total_leads}人但列表为空，可能翻页未生效`);
         }
         if (comments.length === 0 && parseFloat(metrics.comment_count) > 0) {
@@ -1563,13 +1655,13 @@
         const dateRange = getDaysList(CONFIG.COLLECT_DAYS);
         const dateSet = new Set(dateRange);
 
-        // 预拉取所有目标日期的已有场次，合并为单一Set
+        // 预拉取所有目标日期的已有场次，合并为单一Set（使用账户ID+开始时间作为唯一键）
         const allExistingStarts = new Set();
         for (const d of dateRange) {
             const starts = await getExistingSessions(d);
             for (const s of starts) allExistingStarts.add(s);
         }
-        log(`服务端已有 ${allExistingStarts.size} 个目标日期场次`);
+        log(`服务端已有 ${allExistingStarts.size} 个目标日期场次（按账户+时间去重）`);
 
         await retryCachedData();
 
@@ -1696,7 +1788,8 @@
                 // 简化策略：直接检查服务端是否已有该场次（可能其他途径已采集）
                 try {
                     const existingCheck = await getExistingSessions(pendingStart.slice(0, 10));
-                    if (existingCheck.has(pendingStart)) {
+                    const key = (CONFIG.ACCOUNT_ID || '') + '|' + pendingStart;
+                    if (existingCheck.has(key) || existingCheck.has(pendingStart)) {
                         log(`补采场次 ${pendingStart} 已存在，移除`);
                         removePendingLiveSession(pendingStart);
                         continue;

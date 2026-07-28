@@ -14,15 +14,22 @@
             <option value="false">无效</option>
             <option value="null">未验证</option>
         </select>
-        <select x-model="filters.source" @change="loadLeads()" class="form-input max-w-[120px] text-xs py-1 px-2">
+        <select x-model="filters.source" @change="loadLeads()" class="form-input max-w-[100px] text-xs py-1 px-2">
             <option value="">全部来源</option>
-            <option value="marketing">营销流</option>
-            <option value="natural">自然流</option>
             <option value="api">API同步</option>
             <option value="tm">油猴采集</option>
             <option value="manual">手动添加</option>
             <option value="excel">Excel导入</option>
         </select>
+        <select x-model="filters.traffic" @change="loadLeads()" class="form-input max-w-[100px] text-xs py-1 px-2">
+            <option value="">全部流量</option>
+            <option value="marketing">营销流</option>
+            <option value="natural">自然流</option>
+            <option value="short_video">短视频</option>
+            <option value="live">直播</option>
+        </select>
+        <input type="date" x-model="filters.date_from" @change="loadLeads()" class="form-input max-w-[140px] text-xs py-1 px-2" placeholder="开始日期">
+        <input type="date" x-model="filters.date_to" @change="loadLeads()" class="form-input max-w-[140px] text-xs py-1 px-2" placeholder="结束日期">
         <button @click="showManualClueModal()" class="btn-primary text-sm py-1.5 px-3">+ 添加私信线索</button>
         <label class="btn-success text-sm py-1.5 px-3 cursor-pointer">
             📊 Excel导入
@@ -40,8 +47,10 @@
         <table class="data-table">
             <thead><tr>
                 <th><input type="checkbox" @change="toggleAll($event.target.checked)"></th>
-                <th>昵称</th><th>城市</th><th>留资时间</th>
-                <th>来源</th><th>联系方式</th><th>微信</th><th>路径</th><th>标签</th><th>有效性</th><th>分配员工</th><th>成单</th>
+                <th @click="toggleSort('nickname')" class="cursor-pointer hover:bg-gray-100">昵称 <span x-show="sort_by==='nickname'" x-text="sort_order==='asc'?'▲':'▼'"></span></th>
+                <th @click="toggleSort('city')" class="cursor-pointer hover:bg-gray-100">城市 <span x-show="sort_by==='city'" x-text="sort_order==='asc'?'▲':'▼'"></span></th>
+                <th @click="toggleSort('lead_time')" class="cursor-pointer hover:bg-gray-100">留资时间 <span x-show="sort_by==='lead_time'" x-text="sort_order==='asc'?'▲':'▼'"></span></th>
+                <th>来源</th><th>流量</th><th>联系方式</th><th>微信</th><th>路径</th><th>标签</th><th>有效性</th><th>分配员工</th><th>成单</th>
             </tr></thead>
             <tbody>
                 <template x-for="l in leads" :key="l.id">
@@ -51,12 +60,17 @@
                         <td x-text="l.city||'-'"></td>
                         <td x-text="l.lead_time"></td>
                         <td>
-                            <span x-show="l.source==='marketing'" class="bg-pink-100 text-pink-800 px-2 py-1 rounded text-xs">营销流</span>
                             <span x-show="l.source==='api'" class="bg-blue-100 text-blue-800 px-2 py-1 rounded text-xs">API</span>
                             <span x-show="l.source==='tm'" class="bg-green-100 text-green-800 px-2 py-1 rounded text-xs">油猴</span>
                             <span x-show="l.source==='manual'" class="bg-purple-100 text-purple-800 px-2 py-1 rounded text-xs">手动</span>
-                            <span x-show="l.source==='natural'" class="bg-teal-100 text-teal-800 px-2 py-1 rounded text-xs">自然流</span>
                             <span x-show="l.source==='excel'" class="bg-orange-100 text-orange-800 px-2 py-1 rounded text-xs">Excel</span>
+                        </td>
+                        <td>
+                            <span x-show="l.traffic==='marketing'" class="bg-pink-100 text-pink-800 px-2 py-1 rounded text-xs">营销流</span>
+                            <span x-show="l.traffic==='natural'" class="bg-teal-100 text-teal-800 px-2 py-1 rounded text-xs">自然流</span>
+                            <span x-show="l.traffic==='short_video'" class="bg-yellow-100 text-yellow-800 px-2 py-1 rounded text-xs">短视频</span>
+                            <span x-show="l.traffic==='live'" class="bg-red-100 text-red-800 px-2 py-1 rounded text-xs">直播</span>
+                            <span x-show="!l.traffic" class="text-xs text-gray-400">-</span>
                         </td>
                         <td class="text-xs font-mono" x-text="l.phone || l.phone_masked || '-'"></td>
                         <td class="text-xs" x-text="l.weixin || '-'"></td>
@@ -81,10 +95,20 @@
             </tbody>
         </table>
     </div>
-    <div class="flex justify-between items-center">
-        <button @click="page--;loadLeads()" :disabled="page<=1" class="px-3 py-1 border rounded disabled:opacity-50">上一页</button>
-        <span class="text-sm">第 <span x-text="page"></span> 页</span>
-        <button @click="page++;loadLeads()" :disabled="page*pageSize>=total" class="px-3 py-1 border rounded disabled:opacity-50">下一页</button>
+    <div class="flex justify-between items-center bg-white p-3 rounded-lg shadow-sm">
+        <div class="flex items-center gap-2">
+            <button @click="page=1;loadLeads()" :disabled="page<=1" class="px-2 py-1 border rounded text-xs disabled:opacity-50">首页</button>
+            <button @click="page--;loadLeads()" :disabled="page<=1" class="px-3 py-1 border rounded disabled:opacity-50">上一页</button>
+            <span class="text-sm">第 <span x-text="page"></span> / <span x-text="totalPages"></span> 页</span>
+            <button @click="page++;loadLeads()" :disabled="page>=totalPages" class="px-3 py-1 border rounded disabled:opacity-50">下一页</button>
+            <button @click="page=totalPages;loadLeads()" :disabled="page>=totalPages" class="px-2 py-1 border rounded text-xs disabled:opacity-50">末页</button>
+        </div>
+        <div class="flex items-center gap-2">
+            <span class="text-xs text-gray-500">共 <span x-text="total"></span> 条</span>
+            <span class="text-xs text-gray-500">跳转到</span>
+            <input type="number" x-model="jumpPage" @keyup.enter="goToPage()" class="form-input max-w-[60px] text-xs py-1 px-2" min="1" :max="totalPages">
+            <button @click="goToPage()" class="btn-primary text-xs py-1 px-2">GO</button>
+        </div>
     </div>
 
     <!-- 模态框必须放在 x-data 作用域内 -->
@@ -252,7 +276,8 @@
 function leadsAdminApp() {
     return {
         leads:[], total:0, page:1, pageSize:20, selectedIds:[],
-        filters:{keyword:'',city:'',is_valid:'',source:''}, cities:[],
+        filters:{keyword:'',city:'',is_valid:'',source:'',traffic:'',date_from:'',date_to:''}, cities:[],
+        sort_by:'', sort_order:'asc', jumpPage:1, totalPages:1,
         dealModal:false, dealForm:{customer_name:'',amount:'',deal_time:'',employee:'',lead_id:null,session_id:null,team_id:'',employee_id:''},
         dealTeams:[], dealTeamEmployees:[],
         manualClueModal:false, manualClueForm:{name:'',phone:'',weixin:'',message_time:'',session_id:'',notes:'',source:'manual'},
@@ -266,11 +291,22 @@ function leadsAdminApp() {
         },
         async loadLeads() {
             const params = new URLSearchParams({page:this.page,size:this.pageSize,...this.filters});
+            if (this.sort_by) { params.set('sort_by', this.sort_by); params.set('sort_order', this.sort_order); }
             const resp = await fetch(`/admin/api/leads?${params}`,{headers:{'Authorization':'Bearer '+localStorage.getItem('admin_token')}});
             const json = await resp.json();
             this.leads = json.data?.items||[]; this.total = json.data?.total||0;
+            this.totalPages = json.data?.total_pages || 1;
             const uniqueCities = [...new Set(this.leads.map(l=>l.city).filter(Boolean))];
             this.cities = uniqueCities.slice(0,20);
+        },
+        toggleSort(col) {
+            if (this.sort_by === col) { this.sort_order = this.sort_order === 'asc' ? 'desc' : 'asc'; }
+            else { this.sort_by = col; this.sort_order = 'asc'; }
+            this.loadLeads();
+        },
+        goToPage() {
+            const p = parseInt(this.jumpPage);
+            if (p >= 1 && p <= this.totalPages) { this.page = p; this.loadLeads(); }
         },
         async markValid(id,val) {
             const v = val==='null'?null:(val==='true');
@@ -290,7 +326,7 @@ function leadsAdminApp() {
             const teamJson = await teamResp.json();
             this.dealTeams = teamJson.data || [];
             // 自动继承线索分配的团队/员工
-            const assignResp = await fetch(`/admin/api/leads/${lead.id}/assignment`, {headers:{'Authorization':'Bearer '+localStorage.getItem('admin_token')}});
+            const assignResp = await fetch(`/admin/api/leads/${encodeURIComponent(lead.id)}/assignment`, {headers:{'Authorization':'Bearer '+localStorage.getItem('admin_token')}});
             const assignJson = await assignResp.json();
             if (assignJson.code === 0 && assignJson.data) {
                 if (assignJson.data.team_id) this.dealForm.team_id = String(assignJson.data.team_id);
@@ -316,7 +352,7 @@ function leadsAdminApp() {
         },
         async cancelDeal(leadId) {
             if (!confirm('确定取消成单？')) return;
-            const resp = await fetch(`/admin/api/deals/by-lead/${leadId}`, {method:'DELETE', headers:{'Authorization':'Bearer '+localStorage.getItem('admin_token')}});
+            const resp = await fetch(`/admin/api/deals/by-lead/${encodeURIComponent(leadId)}`, {method:'DELETE', headers:{'Authorization':'Bearer '+localStorage.getItem('admin_token')}});
             const json = await resp.json();
             if (json.code !== 0) { alert(json.message || '操作失败'); return; }
             this.loadLeads();
@@ -347,8 +383,8 @@ function leadsAdminApp() {
             const resp = await fetch('/admin/api/manual-clue', {method:'POST', headers:{'Authorization':'Bearer '+localStorage.getItem('admin_token'), 'Content-Type':'application/json'}, body});
             const json = await resp.json();
             if (json.code !== 0) { alert(json.message || '操作失败'); return; }
+            alert(json.message || '线索添加成功');
             this.manualClueModal = false;
-            alert('线索添加成功');
             this.loadLeads();
         },
         handleExcelUpload(event) {

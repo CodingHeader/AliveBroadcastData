@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session as DBSession
 from sqlalchemy import Integer as SAInt, Float as SAFloat, func, or_
 from database import get_db
 from models import Session, SessionMetric, Lead, Comment, HighIntentUser, PrivateMessage, Report, Anchor, SessionAnchor, Deal, Setting, SchedulePlan, ScheduleSlot, ScheduleBinding, AdAccount, RoomAccountBinding, DashboardTab, TabAnalysis, ApiClue
-from utils import parse_number, parse_time, format_duration, format_duration_hms, extract_hhmm
+from utils import parse_number, parse_time, format_duration, format_duration_hms, extract_hhmm, resolve_ad_account
 from pydantic import BaseModel
 from typing import List, Optional
 from datetime import datetime, timedelta
@@ -142,9 +142,19 @@ def _match_lead_to_api_clue(session_id: int, lead_data: dict, session_start: str
 
 # ===== 数据接收API =====
 @router.get("/session/check")
-def check_session(start_time: str, db: DBSession = Depends(get_db)):
+def check_session(start_time: str, account_id: int = None, db: DBSession = Depends(get_db)):
     parsed_time = parse_time(start_time)
-    existing = db.query(Session).filter(Session.start_time == parsed_time).first()
+    if account_id:
+        resolved_pk, _ = resolve_ad_account(db, str(account_id))
+        if resolved_pk:
+            existing = db.query(Session).filter(
+                Session.ad_account_id == resolved_pk,
+                Session.start_time == parsed_time
+            ).first()
+        else:
+            existing = db.query(Session).filter(Session.start_time == parsed_time).first()
+    else:
+        existing = db.query(Session).filter(Session.start_time == parsed_time).first()
     if existing: return {"code": 0, "exists": True, "session_id": existing.id}
     return {"code": 0, "exists": False}
 
@@ -156,115 +166,106 @@ def get_sessions_by_date(date: str = Query(..., description="日期，格式：2
     except ValueError:
         return {"code": 400, "message": "date参数格式错误，应为YYYY-MM-DD"}
     next_date = (dt.strptime(date, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
-    sessions = db.query(Session.start_time).filter(
+    sessions = db.query(Session).filter(
         Session.start_time >= f"{date} 00:00:00",
         Session.start_time < f"{next_date} 00:00:00"
     ).order_by(Session.start_time).all()
-    starts = [s[0] for s in sessions]
-    return {"code": 0, "starts": starts}
+    result = [{"id": s.id, "start_time": s.start_time, "ad_account_id": s.ad_account_id, "room_index": s.room_index} for s in sessions]
+    starts = [s.start_time for s in sessions]
+    return {"code": 0, "starts": starts, "sessions": result}
 
 @router.post("/session")
 def receive_session(data: SessionData, db: DBSession = Depends(get_db)):
+    import time as _time, uuid
+    _req_start = _time.time()
+    _request_id = str(uuid.uuid4())
     if data.version not in SUPPORTED_VERSIONS:
-        return {"code": 400, "message": f"不支持的数据版本: {data.version}，请更新油猴脚本"}
+        return {"code": 400, "message": f"不支持的数据版本: {data.version}，请更新油猴脚本", "request_id": _request_id}
     start = parse_time(data.start_time); end = parse_time(data.end_time)
-    existing = db.query(Session).filter(Session.start_time == start).first()
-    if existing: return {"code": 400, "message": "场次已存在", "session_id": existing.id}
     try:
         start_dt = datetime.strptime(start, "%Y-%m-%d %H:%M:%S"); end_dt = datetime.strptime(end, "%Y-%m-%d %H:%M:%S")
         duration_minutes = int((end_dt - start_dt).total_seconds() / 60)
     except: raise HTTPException(status_code=400, detail="时间解析失败")
+    raw_account_id = getattr(data, 'account_id', None)
+    room_index = None
+    resolved_account_id, account_name = resolve_ad_account(db, raw_account_id)
+    if resolved_account_id:
+        # 只按开播日期精确匹配，不回退历史绑定
+        session_date = start[:10]
+        binding = db.query(RoomAccountBinding).filter(
+            RoomAccountBinding.date == session_date,
+            RoomAccountBinding.ad_account_id == resolved_account_id
+        ).first()
+        if binding:
+            room_index = binding.room_index
+    else:
+        # 无法解析账户时返回明确错误
+        _write_collection_log(None, data, None, None, 'failed', int((_time.time() - _req_start) * 1000), db, _request_id)
+        error_msg = {'missing_input': '请设置直播账户ID', 'not_found': '账户不存在，请检查账户ID设置', 'invalid_format': '账户ID格式无效'}
+        return {"code": 400, "message": error_msg.get(account_name, "无法识别直播账户"), "request_id": _request_id}
+
     try:
-        session = Session(start_time=start, end_time=end, duration_minutes=duration_minutes); db.add(session); db.flush()
-        # 处理油猴脚本传递的account_id，关联到直播间账户绑定
-        account_id = getattr(data, 'account_id', None)
-        if account_id:
-            try:
-                account_id = int(account_id)
-                binding = db.query(RoomAccountBinding).filter(RoomAccountBinding.account_id == account_id).first()
-                if binding:
-                    # 更新绑定的session关联（可选：记录该场次属于哪个账户）
-                    pass
-                # 确保AdAccount存在
-                account = db.query(AdAccount).filter(AdAccount.id == account_id).first()
-                if account:
-                    # 如果没有绑定关系，自动创建
-                    if not binding:
-                        db.add(RoomAccountBinding(account_id=account_id, room_name=account.account_name or ''))
-            except (ValueError, TypeError):
-                pass
-        valid_columns = {c.name for c in SessionMetric.__table__.columns} - {'id', 'session_id', 'created_at'}
-        metrics_data = {}
-        for key, value in data.metrics.items():
-            if key not in valid_columns: continue
-            col_type = SessionMetric.__table__.columns[key].type
-            parsed = parse_number(value) if isinstance(value, str) else value
-            # 数值异常检测：处理油猴脚本拼接值
-            if isinstance(parsed, str) and "%" in parsed and parsed.count("%") > 1:
-                for pct in re.findall(r"[\d.]+%", parsed):
-                    parsed = pct; break
-            elif isinstance(parsed, str) and "%" in parsed and parsed.count(".") > 1:
-                # 限位小数提取：取首个1-2位小数百分比（如"0.7280.8782%"→"0.72%"）
-                m = re.match(r"(\d+\.\d{1,2})%", parsed)
-                if m:
-                    parsed = m.group(1) + "%"
-                else:
-                    parts = parsed.replace("%","").split(".")
-                    if len(parts) >= 2 and parts[0] and parts[1]:
-                        parsed = parts[0] + "." + parts[1][:2] + "%"
-            if isinstance(col_type, SAInt):
-                int_val = int(parsed) if isinstance(parsed, (int, float)) else 0
-                # 纯整数拼接检测：值异常大时，尝试用对应count字段fallback
-                if int_val > 99999:
-                    count_fallback_map = {'interaction_users': 'interaction_count', 'exposure_times': 'exposure_count', 'comment_users': 'comment_count', 'like_users': 'like_count', 'share_users': 'share_count'}
-                    fallback_key = count_fallback_map.get(key)
-                    if fallback_key and fallback_key in metrics_data and metrics_data[fallback_key] > 0:
-                        int_val = metrics_data[fallback_key]
-                metrics_data[key] = int_val
-            elif isinstance(col_type, SAFloat): metrics_data[key] = float(parsed) if isinstance(parsed, (int, float)) else 0.0
-            else: metrics_data[key] = str(parsed) if parsed is not None else None
-        db.add(SessionMetric(session_id=session.id, **metrics_data))
-        # 线索处理：油猴脚本提交时匹配ApiClue表（手机号后4位+日期）
+        # 查重：按 (ad_account_id, start_time)
+        existing = db.query(Session).filter(
+            Session.ad_account_id == resolved_account_id,
+            Session.start_time == start
+        ).first()
+
+        if existing:
+            # 更新已有场次
+            action = 'updated'
+            old_end = existing.end_time
+            old_metrics = db.query(SessionMetric).filter(SessionMetric.session_id == existing.id).first()
+            existing.end_time = end
+            existing.duration_minutes = duration_minutes
+            existing.room_index = room_index
+            existing.room_id = str(room_index) if room_index else None
+            existing.ingest_updated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            # 更新指标
+            if old_metrics:
+                _update_metrics_from_data(old_metrics, data.metrics)
+            else:
+                _create_metrics_from_data(existing.id, data.metrics, db)
+            # upsert 子表
+            _upsert_leads(existing.id, data.leads, start, db)
+            _upsert_comments(existing.id, data.comments, db)
+            _upsert_high_intent(existing.id, data.high_intent_users, db)
+            if data.private_messages:
+                _upsert_private_messages(existing.id, data.private_messages, db)
+            db.commit()
+            _duration_ms = int((_time.time() - _req_start) * 1000)
+            _write_collection_log(existing, data, resolved_account_id, room_index, action, _duration_ms, db, _request_id)
+            return {"code": 200, "message": "场次已更新", "action": action, "session_id": existing.id, "request_id": _request_id}
+
+        # 新建场次
+        action = 'created'
+        session = Session(
+            start_time=start, end_time=end, duration_minutes=duration_minutes,
+            ad_account_id=resolved_account_id, room_index=room_index,
+            room_id=str(room_index) if room_index else None
+        )
+        db.add(session); db.flush()
+        _create_metrics_from_data(session.id, data.metrics, db)
+        # 线索处理
         for ld in data.leads:
-            lead_data = ld.model_dump()
-            lead_data['source'] = 'tm'
-            # 优先从已有 ApiClue 获取 anchor_id（API实时采集已匹配）
-            phone_masked = lead_data.get('phone_masked', '')
-            if phone_masked and len(phone_masked) >= 4:
-                existing_ac = db.query(ApiClue).filter(
-                    ApiClue.anchor_id != None,
-                    ApiClue.phone_masked == phone_masked,
-                    ApiClue.create_time_detail.like(f"{start[:10]}%"),
-                ).first()
-                if existing_ac:
-                    lead_data['anchor_id'] = existing_ac.anchor_id
-            # 如果还没 anchor_id，直接按时间匹配主播时段
-            if not lead_data.get('anchor_id'):
-                lead_time_str = lead_data.get('lead_time')
-                if lead_time_str:
-                    from services.clue_service import match_anchor
-                    create_time_detail = f"2026-{lead_time_str}:00"
-                    anchor_ids = match_anchor(create_time_detail, db)
-                    if anchor_ids:
-                        lead_data['anchor_id'] = anchor_ids[0]
-            # 写入Lead表（含anchor_id）
+            lead_data = _process_lead(ld, start, db)
             db.add(Lead(session_id=session.id, **lead_data))
-            # 尝试匹配ApiClue表（建立桥梁）
             _match_lead_to_api_clue(session.id, lead_data, start, db)
         for c in data.comments:
-            existing = db.query(Comment).filter(
+            existing_c = db.query(Comment).filter(
                 Comment.session_id == session.id,
                 Comment.nickname == c.nickname,
                 Comment.comment_time == c.comment_time
             ).first()
-            if not existing:
+            if not existing_c:
                 db.add(Comment(session_id=session.id, **c.model_dump()))
-        for h in data.high_intent_users: db.add(HighIntentUser(session_id=session.id, **h.model_dump()))
+        for h in data.high_intent_users:
+            db.add(HighIntentUser(session_id=session.id, **h.model_dump()))
         if data.private_messages:
             for pm in data.private_messages:
                 db.add(PrivateMessage(session_id=session.id, nickname=pm.get('nickname',''), douyin_id=pm.get('douyin_id',''), has_lead=pm.get('has_lead',False), last_message_time=pm.get('last_message_time',''), last_reply_time=pm.get('last_reply_time',''), pending_reply=pm.get('pending_reply',''), message_count=pm.get('message_count',0), ai_reply_count=pm.get('ai_reply_count',0)))
         db.commit()
-        # 同步SessionAnchor：新Session入库后自动触发对应日期的排班主播同步
+# 同步SessionAnchor：新Session入库后自动触发对应日期的排班主播同步
         try:
             date_str = start[:10]
             binding = db.query(ScheduleBinding).filter(ScheduleBinding.date == date_str).first()
@@ -276,6 +277,8 @@ def receive_session(data: SessionData, db: DBSession = Depends(get_db)):
                     db.commit()
         except Exception as e:
             logger.warning(f"SessionAnchor自动同步失败(date={date_str}): {e}")
+        _duration_ms = int((_time.time() - _req_start) * 1000)
+        _write_collection_log(session, data, resolved_account_id, room_index, action, _duration_ms, db, _request_id)
         # 数据入库后立即自动AI分析（异步，不阻塞返回）
         try:
             from services.ai_service import analyze_session
@@ -294,9 +297,170 @@ def receive_session(data: SessionData, db: DBSession = Depends(get_db)):
             threading.Thread(target=_auto_analyze, daemon=True).start()
         except Exception:
             pass
-        return {"code": 0, "message": "success", "session_id": session.id}
+        return {"code": 0, "message": "success", "action": action, "session_id": session.id, "request_id": _request_id}
     except HTTPException: raise
-    except Exception as e: db.rollback(); raise HTTPException(status_code=500, detail=f"数据库写入失败: {str(e)}")
+    except Exception as e:
+        db.rollback()
+        _write_collection_log(None, data, resolved_account_id, room_index, 'failed', int((_time.time() - _req_start) * 1000), db, _request_id)
+        raise HTTPException(status_code=500, detail=f"数据库写入失败: {str(e)}")
+
+
+def _create_metrics_from_data(session_id, metrics_data_dict, db):
+    """从油猴指标数据创建 SessionMetric"""
+    from models import SessionMetric
+    from sqlalchemy import Integer as SAInt, Float as SAFloat
+    valid_columns = {c.name for c in SessionMetric.__table__.columns} - {'id', 'session_id', 'created_at'}
+    metrics_data = {}
+    for key, value in metrics_data_dict.items():
+        if key not in valid_columns: continue
+        col_type = SessionMetric.__table__.columns[key].type
+        parsed = parse_number(value) if isinstance(value, str) else value
+        if isinstance(parsed, str) and "%" in parsed and parsed.count("%") > 1:
+            for pct in re.findall(r"[\d.]+%", parsed):
+                parsed = pct; break
+        elif isinstance(parsed, str) and "%" in parsed and parsed.count(".") > 1:
+            m = re.match(r"(\d+\.\d{1,2})%", parsed)
+            if m: parsed = m.group(1) + "%"
+            else:
+                parts = parsed.replace("%","").split(".")
+                if len(parts) >= 2 and parts[0] and parts[1]:
+                    parsed = parts[0] + "." + parts[1][:2] + "%"
+        if isinstance(col_type, SAInt):
+            int_val = int(parsed) if isinstance(parsed, (int, float)) else 0
+            if int_val > 99999:
+                count_fallback_map = {'interaction_users': 'interaction_count', 'exposure_times': 'exposure_count', 'comment_users': 'comment_count', 'like_users': 'like_count', 'share_users': 'share_count'}
+                fallback_key = count_fallback_map.get(key)
+                if fallback_key and fallback_key in metrics_data and metrics_data[fallback_key] > 0:
+                    int_val = metrics_data[fallback_key]
+            metrics_data[key] = int_val
+        elif isinstance(col_type, SAFloat): metrics_data[key] = float(parsed) if isinstance(parsed, (int, float)) else 0.0
+        else: metrics_data[key] = str(parsed) if parsed is not None else None
+    db.add(SessionMetric(session_id=session_id, **metrics_data))
+
+
+def _update_metrics_from_data(metrics_obj, metrics_data_dict):
+    """更新已有 SessionMetric"""
+    from sqlalchemy import Integer as SAInt, Float as SAFloat
+    for key, value in metrics_data_dict.items():
+        if not hasattr(metrics_obj, key): continue
+        col_type = SessionMetric.__table__.columns[key].type if hasattr(SessionMetric.__table__.columns, key) else None
+        parsed = parse_number(value) if isinstance(value, str) else value
+        if isinstance(col_type, SAInt):
+            setattr(metrics_obj, key, int(parsed) if isinstance(parsed, (int, float)) else 0)
+        elif isinstance(col_type, SAFloat):
+            setattr(metrics_obj, key, float(parsed) if isinstance(parsed, (int, float)) else 0.0)
+        else:
+            setattr(metrics_obj, key, str(parsed) if parsed is not None else None)
+
+
+def _process_lead(ld, start, db):
+    """处理单条线索数据"""
+    lead_data = ld.model_dump() if hasattr(ld, 'model_dump') else dict(ld)
+    lead_data['source'] = 'tm'
+    phone_masked = lead_data.get('phone_masked', '')
+    if phone_masked and len(phone_masked) >= 4:
+        existing_ac = db.query(ApiClue).filter(
+            ApiClue.anchor_id != None,
+            ApiClue.phone_masked == phone_masked,
+            ApiClue.create_time_detail.like(f"{start[:10]}%"),
+        ).first()
+        if existing_ac:
+            lead_data['anchor_id'] = existing_ac.anchor_id
+    if not lead_data.get('anchor_id'):
+        lead_time_str = lead_data.get('lead_time')
+        if lead_time_str:
+            from services.clue_service import match_anchor
+            create_time_detail = f"2026-{lead_time_str}:00"
+            anchor_ids = match_anchor(create_time_detail, db)
+            if anchor_ids:
+                lead_data['anchor_id'] = anchor_ids[0]
+    return lead_data
+
+
+def _upsert_leads(session_id, leads, start, db):
+    """upsert 线索"""
+    for ld in leads:
+        lead_data = _process_lead(ld, start, db)
+        phone_masked = lead_data.get('phone_masked', '')
+        lead_time = lead_data.get('lead_time', '')
+        existing = None
+        if phone_masked:
+            existing = db.query(Lead).filter(
+                Lead.session_id == session_id,
+                Lead.phone_masked == phone_masked
+            ).first()
+        if not existing and lead_time:
+            existing = db.query(Lead).filter(
+                Lead.session_id == session_id,
+                Lead.lead_time == lead_time,
+                Lead.nickname == lead_data.get('nickname', '')
+            ).first()
+        if not existing:
+            db.add(Lead(session_id=session_id, **lead_data))
+            _match_lead_to_api_clue(session_id, lead_data, start, db)
+
+
+def _upsert_comments(session_id, comments, db):
+    """upsert 评论"""
+    for c in comments:
+        c_dict = c.model_dump() if hasattr(c, 'model_dump') else dict(c)
+        existing = db.query(Comment).filter(
+            Comment.session_id == session_id,
+            Comment.nickname == c_dict.get('nickname', ''),
+            Comment.comment_time == c_dict.get('comment_time', '')
+        ).first()
+        if not existing:
+            db.add(Comment(session_id=session_id, **c_dict))
+
+
+def _upsert_high_intent(session_id, high_intent_users, db):
+    """upsert 高意向用户"""
+    for h in high_intent_users:
+        h_dict = h.model_dump() if hasattr(h, 'model_dump') else dict(h)
+        db.add(HighIntentUser(session_id=session_id, **h_dict))
+
+
+def _upsert_private_messages(session_id, private_messages, db):
+    """upsert 私信"""
+    for pm in private_messages:
+        existing = db.query(PrivateMessage).filter(
+            PrivateMessage.session_id == session_id,
+            PrivateMessage.douyin_id == pm.get('douyin_id', ''),
+        ).first()
+        if not existing:
+            db.add(PrivateMessage(session_id=session_id, nickname=pm.get('nickname',''), douyin_id=pm.get('douyin_id',''), has_lead=pm.get('has_lead',False), last_message_time=pm.get('last_message_time',''), last_reply_time=pm.get('last_reply_time',''), pending_reply=pm.get('pending_reply',''), message_count=pm.get('message_count',0), ai_reply_count=pm.get('ai_reply_count',0)))
+
+
+def _write_collection_log(session, data, account_id, room_index, action, duration_ms, db, request_id=None):
+    """写入采集记录日志"""
+    from models import CollectionLog
+    import uuid
+    try:
+        import json
+        log = CollectionLog(
+            request_id=request_id or str(uuid.uuid4()),
+            session_id=session.id if session else None,
+            session_date=session.start_time[:10] if session and session.start_time else None,
+            session_start_time=session.start_time if session else None,
+            session_end_time=session.end_time if session else None,
+            room_index=room_index,
+            ad_account_id=account_id,
+            script_version=getattr(data, 'version', None) if data else None,
+            action=action,
+            status='error' if action == 'failed' else 'success',
+            metrics_count=len(getattr(data, 'metrics', {})) if data else 0,
+            leads_inserted=len(getattr(data, 'leads', [])) if data else 0,
+            comments_inserted=len(getattr(data, 'comments', [])) if data else 0,
+            high_intent_inserted=len(getattr(data, 'high_intent_users', [])) if data else 0,
+            private_messages_inserted=len(getattr(data, 'private_messages', [])) if data else 0,
+            duration_ms=duration_ms,
+            updated_fields=json.dumps(list(getattr(data, 'metrics', {}).keys()), ensure_ascii=False) if data else None,
+        )
+        db.add(log)
+        db.commit()
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception(f"采集日志写入失败 request_id={request_id}")
 
 @router.post("/alert")
 def receive_alert(data: dict, db: DBSession = Depends(get_db)):

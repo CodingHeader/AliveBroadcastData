@@ -67,6 +67,16 @@ def start_scheduler():
         max_instances=1,
     )
 
+    # 月报：每月1号02:00生成
+    scheduler.add_job(
+        _generate_monthly_report,
+        trigger=CronTrigger(day=1, hour=2, minute=0),
+        id="monthly_report",
+        name="每月报告生成",
+        replace_existing=True,
+        max_instances=1,
+    )
+
     # 邮件推送：每天09:30发送
     scheduler.add_job(
         _send_daily_email,
@@ -197,6 +207,33 @@ def _generate_weekly_report():
         logger.info(f"周报生成任务已触发: {week_str}")
     except Exception as e:
         logger.error(f"周报生成失败: {e}")
+def _generate_monthly_report():
+    """生成月报"""
+    if _check_scheduler_paused():
+        logger.info("调度器已暂停，跳过月报生成")
+        return
+    from datetime import date, timedelta
+    from database import SessionLocal
+    from models import Report
+    try:
+        today = date.today()
+        first_of_this_month = today.replace(day=1)
+        last_month_end = first_of_this_month - timedelta(days=1)
+        month_str = last_month_end.strftime("%Y-%m")
+        db = SessionLocal()
+        try:
+            existing = db.query(Report).filter(Report.report_type == "monthly", Report.period == month_str).first()
+            if existing:
+                logger.info(f"月报已存在: {month_str}")
+                return
+        finally:
+            db.close()
+        import requests as http_req
+        http_req.post(f"http://127.0.0.1:{PORT}/api/reports/monthly/{month_str}/generate", timeout=300)
+        logger.info(f"月报生成任务已触发: {month_str}")
+    except Exception as e:
+        logger.error(f"月报生成失败: {e}")
+
 
 
 def _send_daily_email():
@@ -234,15 +271,14 @@ def _send_daily_email():
             db.close()
     except Exception as e:
         logger.error(f"日报推送失败: {e}")
-
-
 def _run_ai_analysis():
     """执行每日AI分析"""
     if _check_scheduler_paused():
         logger.info("调度器已暂停，跳过AI分析")
         return
     from database import SessionLocal
-    from models import Setting
+    from models import Setting, Session
+    import traceback
     try:
         db = SessionLocal()
         try:
@@ -250,11 +286,25 @@ def _run_ai_analysis():
             if not enabled or enabled.value != "true":
                 logger.info("AI自动分析未启用，跳过")
                 return
+            sessions = db.query(Session).filter(Session.analyzed == False).order_by(Session.id.asc()).limit(50).all()
+            if not sessions:
+                logger.info("没有待分析的场次")
+                return
+            from services.ai_service import analyze_session
+            analyzed = 0
+            for s in sessions:
+                try:
+                    analyze_session(db, s.id)
+                    analyzed += 1
+                except Exception as e:
+                    logger.error(f"AI分析场次失败: session_id={s.id} err={e}")
+            logger.info(f"AI自动分析完成: 共{len(sessions)}场，成功{analyzed}场")
         finally:
             db.close()
-        # 触发AI分析（通过内部API调用）
-        logger.info("每日AI分析任务已触发")
     except Exception as e:
+        logger.error(f"AI分析失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         logger.error(f"AI分析失败: {e}")
 
 

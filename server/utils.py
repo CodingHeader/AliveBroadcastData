@@ -71,3 +71,27 @@ def time_in_range(on_time: str, off_time: str, target_time: str) -> bool:
         return on_min <= t_min < off_min
     except (ValueError, IndexError, TypeError):
         return False
+
+
+def resolve_ad_account(db, raw_account_id):
+    """统一解析直播账户ID
+    支持 AdAccount.id 和 AdAccount.account_id 两种格式
+    返回: (account_pk, account_name) 或 (None, error_code)
+    error_code: 'missing_input' / 'not_found' / 'invalid_format'
+    """
+    from models import AdAccount
+    if not raw_account_id:
+        return None, 'missing_input'
+    try:
+        raw_id = int(raw_account_id)
+        # 先按主键查
+        account = db.query(AdAccount).filter(AdAccount.id == raw_id).first()
+        if account:
+            return account.id, account.account_name or ''
+        # 再按外部ID查
+        account = db.query(AdAccount).filter(AdAccount.account_id == str(raw_id)).first()
+        if account:
+            return account.id, account.account_name or ''
+        return None, 'not_found'
+    except (ValueError, TypeError):
+        return None, 'invalid_format'

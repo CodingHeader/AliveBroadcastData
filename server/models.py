@@ -5,14 +5,23 @@ from database import Base
 class Session(Base):
     __tablename__ = "sessions"
     id = Column(Integer, primary_key=True, autoincrement=True)
-    start_time = Column(Text, nullable=False, unique=True)
+    start_time = Column(Text, nullable=False)
     end_time = Column(Text, nullable=False)
     duration_minutes = Column(Integer, nullable=False)
     analyzed = Column(Boolean, default=False)
     analyzed_at = Column(Text, nullable=True)
     room_id = Column(Text, nullable=True)
+    ad_account_id = Column(Integer, nullable=True)
+    room_index = Column(Integer, nullable=True)
+    external_session_id = Column(Text, nullable=True)
+    schedule_day_id = Column(Integer, nullable=True)
+    ingest_updated_at = Column(Text, nullable=True)
     comment_summary = Column(Text, nullable=True)
     created_at = Column(Text, server_default="CURRENT_TIMESTAMP")
+
+    __table_args__ = (
+        UniqueConstraint("external_session_id", name="uq_session_external_id"),
+    )
     
     metrics = relationship("SessionMetric", back_populates="session", uselist=False)
     leads = relationship("Lead", back_populates="session")
@@ -95,6 +104,7 @@ class Lead(Base):
     is_deal = Column(Boolean, default=False)
     source = Column(Text, nullable=True)  # 线索来源: api, manual, natural
     assigned_employee = Column(Text, nullable=True)
+    weixin = Column(Text, nullable=True)
     created_at = Column(Text, server_default="CURRENT_TIMESTAMP")
     
     session = relationship("Session", back_populates="leads")
@@ -213,6 +223,7 @@ class SchedulePlan(Base):
     time_granularity = Column(Integer, default=60)
     room_count = Column(Integer, default=2)
     anchor_count = Column(Integer, default=5)
+    operator_count = Column(Integer, default=1)
     is_active = Column(Boolean, default=True)
     notes = Column(Text, nullable=True)
     created_at = Column(Text, server_default="CURRENT_TIMESTAMP")
@@ -228,6 +239,7 @@ class ScheduleSlot(Base):
     room_index = Column(Integer, nullable=False)
     slot_status = Column(Text, nullable=False, default="on_air_anchor")
     anchor_slot = Column(Integer, nullable=True)
+    operator_slot = Column(Integer, nullable=True)
     created_at = Column(Text, server_default="CURRENT_TIMESTAMP")
 
     plan = relationship("SchedulePlan", back_populates="slots")
@@ -238,10 +250,13 @@ class ScheduleBinding(Base):
     date = Column(Text, nullable=False, unique=True)
     plan_id = Column(Integer, ForeignKey("schedule_plans.id"), nullable=False)
     anchor_mapping = Column(Text, nullable=False, default="{}")
+    staff_mapping = Column(Text, nullable=True, default="{}")
+    recruit_team_id = Column(Integer, ForeignKey("recruit_teams.id"), nullable=True)
     created_at = Column(Text, server_default="CURRENT_TIMESTAMP")
 
     plan = relationship("SchedulePlan", back_populates="bindings")
     overtime_slots = relationship("BindingSlot", back_populates="binding", cascade="all, delete-orphan")
+    recruit_team = relationship("RecruitTeam")
 
 class BindingSlot(Base):
     """排班绑定层级时段（临时加班/调休等，仅影响当日，不污染方案模板）"""
@@ -256,6 +271,113 @@ class BindingSlot(Base):
     created_at = Column(Text, server_default="CURRENT_TIMESTAMP")
 
     binding = relationship("ScheduleBinding", back_populates="overtime_slots")
+
+
+class ScheduleDay(Base):
+    """日排班实例 - 每天的真实排班，支持多主播多时段"""
+    __tablename__ = "schedule_days"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    date = Column(Text, nullable=False, unique=True)
+    weekday_plan = Column(Text, nullable=True)
+    plan_id = Column(Integer, ForeignKey("schedule_plans.id"), nullable=True)
+    recruit_team_id = Column(Integer, ForeignKey("recruit_teams.id"), nullable=True)
+    status = Column(Text, nullable=True, default="draft")
+    source = Column(Text, nullable=True, default="manual")
+    updated_at = Column(Text, nullable=True)
+    updated_by = Column(Text, nullable=True)
+    notes = Column(Text, nullable=True)
+    created_at = Column(Text, server_default="CURRENT_TIMESTAMP")
+
+    plan = relationship("SchedulePlan")
+    recruit_team = relationship("RecruitTeam")
+    anchors = relationship("ScheduleDayAnchor", back_populates="day", cascade="all, delete-orphan")
+    operators = relationship("ScheduleDayOperator", back_populates="day", cascade="all, delete-orphan")
+
+
+class ScheduleDayAnchor(Base):
+    """日排班主播明细 - 每个主播在当天的所有时段"""
+    __tablename__ = "schedule_day_anchors"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    day_id = Column(Integer, ForeignKey("schedule_days.id"), nullable=False)
+    anchor_name = Column(Text, nullable=False)
+    anchor_id = Column(Integer, ForeignKey("anchors.id"), nullable=True)
+    room_index = Column(Integer, default=1)
+    time_slots = Column(Text, nullable=False, default="[]")
+    total_hours = Column(Float, default=0)
+    order_index = Column(Integer, default=0)
+    notes = Column(Text, nullable=True)
+    created_at = Column(Text, server_default="CURRENT_TIMESTAMP")
+
+    day = relationship("ScheduleDay", back_populates="anchors")
+
+
+class ScheduleDayOperator(Base):
+    """日排班运营人员 - 每天每个直播间每个时段的运营人员"""
+    __tablename__ = "schedule_day_operators"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    day_id = Column(Integer, ForeignKey("schedule_days.id"), nullable=False)
+    operator_name = Column(Text, nullable=False)
+    operator_id = Column(Integer, ForeignKey("operators.id"), nullable=True)
+    room_index = Column(Integer, default=1)
+    time_slots = Column(Text, nullable=False, default="[]")
+    total_hours = Column(Float, default=0)
+    order_index = Column(Integer, default=0)
+    notes = Column(Text, nullable=True)
+    created_at = Column(Text, server_default="CURRENT_TIMESTAMP")
+
+    day = relationship("ScheduleDay", back_populates="operators")
+
+
+class Operator(Base):
+    """运营人员主数据"""
+    __tablename__ = "operators"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(Text, nullable=False, unique=True)
+    phone = Column(Text, nullable=True)
+    is_active = Column(Boolean, default=True)
+    notes = Column(Text, nullable=True)
+    created_at = Column(Text, server_default="CURRENT_TIMESTAMP")
+
+
+class CollectionLog(Base):
+    """脚本采集日志 - 记录油猴脚本提交直播数据的审计信息"""
+    __tablename__ = "collection_logs"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    request_id = Column(Text, nullable=True, unique=True)
+    session_id = Column(Integer, nullable=True)
+    session_date = Column(Text, nullable=True)
+    session_start_time = Column(Text, nullable=True)
+    session_end_time = Column(Text, nullable=True)
+    room_index = Column(Integer, nullable=True)
+    ad_account_id = Column(Integer, nullable=True)
+    script_version = Column(Text, nullable=True)
+    action = Column(Text, nullable=False, default="created")  # created/updated/no_change/duplicate/failed
+    status = Column(Text, nullable=False, default="success")  # success/error
+    updated_fields = Column(Text, nullable=True)  # JSON array of updated field names
+    metrics_count = Column(Integer, default=0)
+    leads_inserted = Column(Integer, default=0)
+    leads_updated = Column(Integer, default=0)
+    comments_inserted = Column(Integer, default=0)
+    high_intent_inserted = Column(Integer, default=0)
+    private_messages_inserted = Column(Integer, default=0)
+    duration_ms = Column(Integer, nullable=True)
+    message = Column(Text, nullable=True)
+    created_at = Column(Text, server_default="CURRENT_TIMESTAMP")
+
+
+class WeekdayDefault(Base):
+    """周默认排班方案 - 配置周一至周日的默认方案+团队"""
+    __tablename__ = "weekday_defaults"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    weekday = Column(Integer, nullable=False, unique=True)  # 0=Mon ... 6=Sun
+    plan_id = Column(Integer, ForeignKey("schedule_plans.id"), nullable=False)
+    anchor_mapping = Column(Text, nullable=False, default='{}')
+    recruit_team_id = Column(Integer, ForeignKey("recruit_teams.id"), nullable=True)
+    created_at = Column(Text, server_default="CURRENT_TIMESTAMP")
+
+    plan = relationship("SchedulePlan")
+    recruit_team = relationship("RecruitTeam")
+
 
 class AdAccount(Base):
     """直播账户"""
@@ -497,3 +619,72 @@ class ClueAssignment(Base):
     clue = relationship("ApiClue", back_populates="assignment")
     team = relationship("RecruitTeam", back_populates="assignments")
     employee = relationship("RecruitEmployee")
+
+
+class MultiDimRecord(Base):
+    """多维数据导入记录表 - 统一承载所有sheet类型的数据
+    通过 sheet_type 区分类型：education/douyin_ops/moment_ad/live_lead/schedule/operational
+    通过 dedup_key (联系方式+微信归一化) 实现全局去重
+    raw_data 存储整行JSON（保留所有原始列）
+    """
+    __tablename__ = "multidim_records"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    sheet_type = Column(Text, nullable=False, index=True)
+    period = Column(Text, nullable=True, index=True)
+    source_file = Column(Text, nullable=True)
+    batch_id = Column(Integer, ForeignKey("multidim_import_batches.id"), nullable=True, index=True)
+
+    contact_norm = Column(Text, nullable=True, index=True)       # 归一化联系方式
+    wechat = Column(Text, nullable=True)
+    dedup_key = Column(Text, nullable=True, index=True)           # contact_norm||wechat
+
+    name = Column(Text, nullable=True)
+    assign_date = Column(Text, nullable=True)
+    assigned_teacher = Column(Text, nullable=True)
+    data_status = Column(Text, nullable=True)
+
+    raw_data = Column(Text, nullable=False, default="{}")        # 全部原始列JSON
+
+    synced_to_lead = Column(Integer, default=0)              # 是否已同步到 ApiClue 线索体系(0=否,1=是)
+    row_index = Column(Integer, nullable=True)
+    created_at = Column(Text, server_default="CURRENT_TIMESTAMP")
+
+    batch = relationship("MultiDimImportBatch", back_populates="records")
+
+
+class MultiDimImportBatch(Base):
+    """多维数据导入批次日志"""
+    __tablename__ = "multidim_import_batches"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    filename = Column(Text, nullable=False)
+    file_format = Column(Text, nullable=False, default="xlsx")
+    admin_name = Column(Text, nullable=True)
+    total_rows = Column(Integer, default=0)
+    inserted_count = Column(Integer, default=0)
+    skipped_count = Column(Integer, default=0)
+    error_count = Column(Integer, default=0)
+    by_type_json = Column(Text, nullable=True, default="{}")
+    status = Column(Text, nullable=False, default="success")
+    error_message = Column(Text, nullable=True)
+    imported_at = Column(Text, server_default="CURRENT_TIMESTAMP")
+
+    records = relationship("MultiDimRecord", back_populates="batch", cascade="all, delete-orphan")
+    skips = relationship("MultiDimImportSkip", back_populates="batch", cascade="all, delete-orphan")
+
+
+class MultiDimImportSkip(Base):
+    """多维数据导入跳过记录"""
+    __tablename__ = "multidim_import_skips"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    batch_id = Column(Integer, ForeignKey("multidim_import_batches.id"), nullable=False, index=True)
+    sheet_type = Column(Text, nullable=True)
+    sheet_name = Column(Text, nullable=True)
+    row_index = Column(Integer, nullable=True)
+    contact_norm = Column(Text, nullable=True)
+    wechat = Column(Text, nullable=True)
+    reason = Column(Text, nullable=False)
+    detail = Column(Text, nullable=True)
+    raw_data = Column(Text, nullable=True)
+    created_at = Column(Text, server_default="CURRENT_TIMESTAMP")
+
+    batch = relationship("MultiDimImportBatch", back_populates="skips")
